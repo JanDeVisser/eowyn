@@ -1,10 +1,12 @@
 const std = @import("std");
 
-pub fn HashSet(comptime T: type) type {
+pub const StringSet = HashSet([]const u8, std.hash_map.StringContext);
+
+pub fn HashSet(comptime T: type, comptime Context: ?type) type {
     return struct {
         map: Map,
 
-        const Map = std.AutoHashMap(T, bool);
+        const Map = if (Context) |Ctx| std.HashMap(T, bool, Ctx, std.hash_map.default_max_load_percentage) else std.AutoHashMap(T, bool);
         const Self = @This();
 
         const Iterator = struct {
@@ -34,23 +36,18 @@ pub fn HashSet(comptime T: type) type {
             this.map.deinit();
         }
 
-        pub fn add(this: *Self, elem: T) !void {
+        pub fn add(this: *Self, elem: T) !usize {
+            const old_size = this.size();
             try this.map.put(elem, true);
-        }
-
-        pub fn addAll(this: *Self, other: Self) !void {
-            var it = other.iterator();
-            while (it.next()) |elem| {
-                try this.add(elem);
-            }
+            return this.size() - old_size;
         }
 
         pub fn contains(this: Self, elem: T) bool {
             return this.map.contains(elem);
         }
 
-        pub fn remove(this: *Self, elem: T) bool {
-            return this.map.remove(elem, elem);
+        pub fn remove(this: *Self, elem: T) usize {
+            return if (this.map.remove(elem)) 1 else 0;
         }
 
         pub fn clear(this: *Self) void {
@@ -69,29 +66,35 @@ pub fn HashSet(comptime T: type) type {
             return Iterator.init(this.map);
         }
 
-        pub fn union_with(this: *Self, other: Self) !void {
+        pub fn union_with(this: *Self, other: Self) !usize {
+            const old_size = this.size();
             var it = other.iterator();
             while (it.next()) |elem| {
-                this.add(elem);
+                _ = try this.add(elem);
             }
+            return this.size() - old_size;
         }
 
-        pub fn intersect(this: *Self, other: Self) void {
+        pub fn intersect(this: *Self, other: Self) usize {
             var it = this.iterator();
+            var count: usize = 0;
             while (it.next()) |elem| {
                 if (!other.contains(elem)) {
-                    this.remove(elem);
+                    count += this.remove(elem);
                 }
             }
+            return count;
         }
 
-        pub fn minus(this: *Self, other: Self) void {
+        pub fn minus(this: *Self, other: Self) usize {
             var it = this.iterator();
+            var count: usize = 0;
             while (it.next()) |elem| {
                 if (other.contains(elem)) {
-                    this.remove(elem);
+                    count += this.remove(elem);
                 }
             }
+            return count;
         }
 
         pub fn disjoint(this: Self, other: Self) bool {
@@ -118,28 +121,18 @@ pub fn HashSet(comptime T: type) type {
             return this.subset_of(other) and other.subset_of(this);
         }
 
-        pub fn format(value: Self, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        pub fn format(this: Self, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
             _ = try writer.write("{");
-            if (!value.empty()) {
-                _ = try writer.write(" ");
-                const a = value.map.allocator;
-                var strings = try a.alloc([]const u8, value.size());
-                errdefer a.free(strings);
-                var ix: usize = 0;
-                var it = value.iterator();
+            if (!this.empty()) {
+                var it = this.iterator();
+                var first = true;
                 while (it.next()) |i| {
-                    strings[ix] = try std.fmt.allocPrint(a, "{any}", .{i});
-                    ix += 1;
-                }
-                defer {
-                    for (strings) |s| {
-                        a.free(s);
+                    if (!first) {
+                        _ = try writer.write(",");
                     }
-                    a.free(strings);
+                    first = false;
+                    try writer.print(" {any}", .{i});
                 }
-                const joined = try std.mem.join(a, ", ", strings);
-                defer a.free(joined);
-                _ = try writer.writeAll(joined);
                 _ = try writer.write(" ");
             }
             _ = try writer.write("}");
@@ -148,15 +141,17 @@ pub fn HashSet(comptime T: type) type {
 }
 
 test "Create HashSet" {
-    var s = HashSet(i32).init(std.heap.c_allocator);
-    try s.add(4);
-    try s.add(32);
+    var s = HashSet(i32, null).init(std.heap.c_allocator);
+    _ = try s.add(4);
+    _ = try s.add(32);
     try std.testing.expect(s.size() == 2);
 }
 
 test "Print HashSet" {
-    var s = HashSet(i32).init(std.heap.c_allocator);
-    try s.add(4);
-    try s.add(32);
-    try std.testing.expect(std.mem.eql(u8, try std.fmt.allocPrint(std.heap.c_allocator, "{any}", .{s}), "{ 4, 32 }"));
+    var s = HashSet(i32, null).init(std.heap.c_allocator);
+    _ = try s.add(4);
+    _ = try s.add(32);
+    const str = try std.fmt.allocPrint(std.heap.c_allocator, "{any}", .{s});
+    defer std.heap.c_allocator.free(str);
+    try std.testing.expectEqualStrings("{ 4, 32 }", str);
 }

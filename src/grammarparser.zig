@@ -12,7 +12,7 @@ const GrammarParser = struct {
     pub fn init(allocator: std.mem.Allocator, source: []const u8) !GrammarParser {
         var ret = GrammarParser{
             .allocator = allocator,
-            .lexer = try lxr.Lexer.init(allocator, source),
+            .lexer = try lxr.Lexer.init(allocator, lxr.Config.init(allocator), source),
             .grammar = try grm.Grammar.init(allocator),
             .keywords = std.StringHashMap(usize).init(allocator),
         };
@@ -71,7 +71,7 @@ const GrammarParser = struct {
         return error.MalformedActionData;
     }
 
-    fn parse_actions(this: *GrammarParser, rule: *grm.Rule) !void {
+    fn parse_actions(this: *GrammarParser, seq: *grm.Sequence) !void {
         try this.lexer.expect_symbol('[');
         while (this.lexer.peek_next()) |t| {
             switch (t.kind) {
@@ -88,7 +88,7 @@ const GrammarParser = struct {
                     const name = t.text;
                     this.lexer.advance();
                     const data: ?grm.Value = if (this.lexer.accept_symbol(':')) try this.parse_value() else null;
-                    try rule.entries.append(.{ .Action = try grm.GrammarAction.init(this.allocator, this.grammar.resolver(), name, data) });
+                    try seq.symbols.append(.{ .Action = try grm.GrammarAction.init(this.allocator, this.grammar.resolver, name, data) });
                 },
                 else => return error.MalformedAction,
             }
@@ -100,37 +100,37 @@ const GrammarParser = struct {
         const name = try this.lexer.expect_identifier();
         try this.lexer.expect_symbol(':');
         try this.lexer.expect_symbol('=');
-        var nt = grm.NonTerminal.init(this.allocator, name.text);
-        var rule = grm.Rule.init(this.allocator);
+        var rule = grm.Rule.init(&this.grammar, name.text);
+        var seq = grm.Sequence.init(&this.grammar);
         while (this.lexer.peek_next()) |t| {
             switch (t.kind) {
                 .Symbol => |c| {
                     switch (c) {
-                        '[' => try this.parse_actions(&rule),
+                        '[' => try this.parse_actions(&seq),
                         ';' => break,
                         '|' => {
-                            try nt.rules.append(rule);
-                            rule = grm.Rule.init(this.allocator);
+                            try rule.sequences.append(seq);
+                            seq = grm.Sequence.init(&this.grammar);
                             this.lexer.advance();
                         },
                         else => {
-                            try rule.entries.append(.{ .Terminal = .{ .Symbol = c } });
+                            try seq.symbols.append(.{ .Terminal = .{ .Symbol = c } });
                             this.lexer.advance();
                         },
                     }
                 },
                 .Identifier => {
-                    try rule.entries.append(.{ .NonTerminal = t.text });
+                    try seq.symbols.append(.{ .NonTerminal = t.text });
                     this.lexer.advance();
                 },
                 .String => |q| {
                     switch (q) {
                         '\'' => {
                             switch (t.text[1]) {
-                                'i' => try rule.entries.append(.{ .Terminal = .Identifier }),
-                                'd' => try rule.entries.append(.{ .Terminal = .Number }),
-                                '"', '\'' => try rule.entries.append(.{ .Terminal = .{ .String = t.text[1] } }),
-                                else => try rule.entries.append(.{ .Terminal = .{ .Symbol = t.text[1] } }),
+                                'i' => try seq.symbols.append(.{ .Terminal = .Identifier }),
+                                'd' => try seq.symbols.append(.{ .Terminal = .Number }),
+                                '"', '\'' => try seq.symbols.append(.{ .Terminal = .{ .String = t.text[1] } }),
+                                else => try seq.symbols.append(.{ .Terminal = .{ .Symbol = t.text[1] } }),
                             }
                             this.lexer.advance();
                         },
@@ -141,7 +141,7 @@ const GrammarParser = struct {
                                 try this.keywords.put(kw, new_code);
                                 break :blk new_code;
                             };
-                            try rule.entries.append(.{ .Terminal = .{ .Keyword = code } });
+                            try seq.symbols.append(.{ .Terminal = .{ .Keyword = code } });
                             this.lexer.advance();
                         },
                         else => return error.MalformedProduction,
@@ -151,8 +151,8 @@ const GrammarParser = struct {
                 else => return error.MalformedProduction,
             }
         }
-        try nt.rules.append(rule);
-        try this.grammar.non_terminals.put(nt.name, nt);
+        try rule.sequences.append(seq);
+        try this.grammar.rules.put(rule.non_terminal, rule);
         this.lexer.advance();
     }
 
@@ -205,5 +205,56 @@ test "Grammar Parser" {
         \\
     );
     try gp.parse();
-    std.debug.print("{}", .{gp.grammar});
+    std.debug.print("\n{}", .{gp.grammar});
+}
+
+test "Firsts" {
+    var gp = try GrammarParser.init(std.heap.c_allocator,
+        \\
+        \\E          := T Eopt
+        \\           ;
+        \\
+        \\Eopt       := '+' T Eopt
+        \\           |  '-' T Eopt
+        \\           |
+        \\           ;
+        \\
+        \\T          := F Topt
+        \\           ;
+        \\
+        \\Topt       := '*' F Topt
+        \\           |  '/' F Topt
+        \\           |
+        \\           ;
+        \\
+        \\F          := 'd'
+        \\           |  '(' E ')'
+        \\           ;
+        \\
+    );
+    try gp.parse();
+    try gp.grammar.build_firsts();
+    std.debug.print("\n", .{});
+    for (gp.grammar.rules.values()) |*rule| {
+        std.debug.print("Firsts {s}: {}\n", .{ rule.non_terminal, rule.firsts });
+    }
+}
+
+test "Follows" {
+    var gp = try GrammarParser.init(std.heap.c_allocator,
+        \\
+        \\E          := T Eopt ;
+        \\Eopt       := '+' T Eopt |  '-' T Eopt | ;
+        \\T          := F Topt ;
+        \\Topt       := '*' F Topt |  '/' F Topt | ;
+        \\F          := 'd' |  '(' E ')' ;
+        \\
+    );
+    try gp.parse();
+    try gp.grammar.build_firsts();
+    try gp.grammar.build_follows();
+    std.debug.print("\n", .{});
+    for (gp.grammar.rules.values()) |*rule| {
+        std.debug.print("Follows {s}: {}\n", .{ rule.non_terminal, rule.follows });
+    }
 }

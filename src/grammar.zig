@@ -5,11 +5,52 @@ const hashset = @import("hashset.zig");
 const resolve = @import("resolve.zig");
 
 pub const Allocator = std.mem.Allocator;
-pub const Set = hashset.HashSet(RuleEntry);
+
+pub fn DeepHashCtx(comptime T: type) type {
+    return struct {
+        pub fn hash(this: @This(), key: T) u64 {
+            _ = this;
+            var hasher = std.hash.Wyhash.init(0);
+            return std.hash.autoHashStrat(&hasher, key, .Deep);
+        }
+
+        pub fn eql(this: @This(), a: Symbol, b: Symbol) bool {
+            _ = this;
+            return std.meta.eql(a, b);
+        }
+    };
+}
+
+pub const SymbolCtx = struct {
+    pub fn hash(this: @This(), key: Symbol) u64 {
+        _ = this;
+        var hasher = std.hash.Wyhash.init(0);
+        switch (key) {
+            .Empty, .End => std.hash.autoHash(&hasher, @intFromEnum(key)),
+            .Action => |ga| std.hash.autoHashStrat(&hasher, ga.full_name, .Deep),
+            .Terminal => |k| std.hash.autoHashStrat(&hasher, k, .Deep),
+            .NonTerminal => |nt| std.hash.autoHashStrat(&hasher, nt, .Deep),
+        }
+        return hasher.final();
+    }
+
+    pub fn eql(this: @This(), a: Symbol, b: Symbol) bool {
+        _ = this;
+        if (@intFromEnum(a) != @intFromEnum(b)) return false;
+        return switch (a) {
+            .Empty, .End => true,
+            .Action => |ga| ga.eql(b.Action),
+            .Terminal => |k| std.meta.eql(k, b.Terminal),
+            .NonTerminal => |nt| std.mem.eql(u8, nt, b.NonTerminal),
+        };
+    }
+};
+
+pub const Set = hashset.HashSet(Symbol, SymbolCtx);
 pub const Resolver = resolve.Resolver;
 
-pub const NonTerminalDef = 200;
-pub const NonTerminalDefStr = ":=";
+pub const RuleDef = 200;
+pub const RuleDefStr = ":=";
 
 pub const LibStr = "lib";
 pub const PrefixStr = "prefix";
@@ -114,6 +155,11 @@ pub const GrammarAction = struct {
         const fnc = try this.action();
         try fnc(target, if (this.data) &this.data else null);
     }
+
+    pub fn eql(this: GrammarAction, other: GrammarAction) bool {
+        if (!std.mem.eql(u8, this.full_name, other.full_name)) return false;
+        return std.meta.eql(this.data, other.data);
+    }
 };
 
 pub const GrammarVariables = struct {
@@ -149,7 +195,7 @@ pub const GrammarVariables = struct {
 
     pub fn deinit(this: *GrammarVariables) void {
         var it = this.variables.iterator();
-        while (it.next()) |e| {
+        for (it.next()) |e| {
             this.allocator.free(e.key_ptr.*);
             e.value_ptr.*.deinit();
         }
@@ -181,7 +227,7 @@ pub const GrammarVariables = struct {
 // https://gist.github.com/trijuhari/f13e4ca6ef9d0557fc33d833a8151392
 // https://gist.github.com/DmitrySoshnikov/29f7a9425cdab69ea68f
 //
-// Rules for First Sets
+// Sequences for First Sets
 //
 // If X is a terminal then First(X) is just X!
 // If there is a Production X → ε then add ε to first(X)
@@ -197,7 +243,7 @@ pub const GrammarVariables = struct {
 //
 
 //
-// Rules for Follow Sets
+// Sequences for Follow Sets
 //
 // First put $ (the end of input marker) in Follow(S) (S is the start symbol)
 // If there is a production A → aBb, (where a can be a whole string)
@@ -208,30 +254,35 @@ pub const GrammarVariables = struct {
 //   then everything in FOLLOW(A) is in FOLLOW(B)
 //
 
-pub const NonTerminal = struct {
-    allocator: Allocator,
+pub const GrammarError = std.mem.Allocator.Error || error{RuleNotFound};
+
+threadlocal var firsts_tx = hashset.StringSet.init(std.heap.c_allocator);
+threadlocal var follows_tx = hashset.StringSet.init(std.heap.c_allocator);
+
+pub const Rule = struct {
+    grammar: *Grammar,
     variables: GrammarVariables,
     state: u64,
-    name: []const u8,
-    rules: std.ArrayList(Rule),
-    parse_table: std.AutoHashMap(RuleEntry, usize),
-    firsts_: ?Set,
-    follows_: ?Set,
+    non_terminal: []const u8,
+    sequences: std.ArrayList(Sequence),
+    parse_table: std.HashMap(Symbol, usize, SymbolCtx, std.hash_map.default_max_load_percentage),
+    firsts: Set,
+    follows: Set,
 
-    pub fn init(allocator: Allocator, name: []const u8) NonTerminal {
+    pub fn init(grammar: *Grammar, non_terminal: []const u8) Rule {
         return .{
-            .allocator = allocator,
-            .variables = GrammarVariables.init(allocator),
-            .state = std.hash_map.hashString(name),
-            .name = name,
-            .rules = std.ArrayList(Rule).init(allocator),
-            .parse_table = std.AutoHashMap(RuleEntry, usize).init(allocator),
-            .firsts_ = null,
-            .follows_ = null,
+            .grammar = grammar,
+            .variables = GrammarVariables.init(grammar.allocator),
+            .state = std.hash_map.hashString(non_terminal),
+            .non_terminal = non_terminal,
+            .sequences = std.ArrayList(Sequence).init(grammar.allocator),
+            .parse_table = std.HashMap(Symbol, usize, SymbolCtx, std.hash_map.default_max_load_percentage).initContext(grammar.allocator, SymbolCtx{}),
+            .firsts = Set.init(grammar.allocator),
+            .follows = Set.init(grammar.allocator),
         };
     }
 
-    pub fn deinit(this: *NonTerminal) void {
+    pub fn deinit(this: *Rule) void {
         this.firsts.deinit();
         this.follows.deinit();
         for (this.rules) |rule| {
@@ -242,97 +293,136 @@ pub const NonTerminal = struct {
         this.variables.deinit();
     }
 
-    pub fn format(this: NonTerminal, comptime _: []const u8, _: std.fmt.FormatOptions, w: anytype) !void {
-        try w.print("{s} :=", .{this.name});
+    pub fn format(this: Rule, comptime _: []const u8, _: std.fmt.FormatOptions, w: anytype) !void {
+        try w.print("{s} :=", .{this.non_terminal});
         var first = true;
-        for (this.rules.items) |rule| {
+        for (this.sequences.items) |seq| {
             if (!first) {
                 _ = try w.write("|");
             }
             first = false;
-            try w.print("{} ", .{rule});
+            try w.print("{} ", .{seq});
         }
         _ = try w.write(";");
     }
 
-    pub fn firsts(this: *NonTerminal, grammar: Grammar) !*Set {
-        if (this.firsts_) |*f| {
-            return f;
+    pub fn update_firsts(this: *Rule) GrammarError!i64 {
+        var count: i64 = 0;
+        if (!firsts_tx.contains(this.non_terminal)) {
+            // std.debug.print("\"{s}\".update_firsts\n", .{this.non_terminal});
+            _ = try firsts_tx.add(this.non_terminal);
+            for (this.sequences.items) |*sequence| {
+                count += try sequence.build_firsts();
+                count += @intCast(try this.firsts.union_with(sequence.firsts));
+            }
+            if (this.firsts.empty()) {
+                count += @intCast(try this.firsts.add(.Empty));
+            }
+            // std.debug.print("\"{s}\".update_firsts => {}\n", .{ this.non_terminal, this.firsts });
+            _ = firsts_tx.remove(this.non_terminal);
         }
-        var f = Set.init(this.ge.grammar.allocator);
-        for (this.rules.items) |rule| {
-            try f.union_with(rule.firsts(grammar));
-        }
-        if (f.empty()) {
-            try f.add(.Empty);
-        }
-        this.firsts_ = f;
-        return this.firsts_;
+        return count;
     }
 
-    pub fn follows(this: *NonTerminal, _: Grammar) !*Set {
-        if (this.follows_) |*f| {
-            return f;
-        }
-        var f = Set.init(this.allocator);
-        if (std.mem.eql(u8, this.ge.grammar.entry_point, this.name)) {
-            try f.add(.End);
-        }
-        this.follows_ = f;
-        return this.follows_;
+    pub fn add_to_follows(this: *Rule, f: Set) !usize {
+        // std.debug.print("\"{s}\".add_follows({})\n", .{ this.non_terminal, f });
+        return try this.follows.union_with(f);
     }
 
-    pub fn check_LL1(this: NonTerminal) bool {
-        var ret = true;
-        for (this.rules.items, 0..) |*r_i, i| {
-            const tail = this.rules.items[i + 1 ..];
-            for (tail, 0..) |*r_j, j| {
-                const ok = r_i.firsts().disjoint(r_j.firsts());
-                if (!ok) {
-                    std.debug.print("Grammar not LL(1): non-terminal {s} - Firsts for rules {} and {} not disjoint\n", .{ this.name, i, i + j });
-                    std.debug.print("FIRSTS({}): {}\n", .{ i, r_i.first });
-                    std.debug.print("FIRSTS({}}): {}\n", .{ i + j, r_j.firsts });
+    pub fn update_follows(this: *Rule) !usize {
+        var count: usize = 0;
+        if (!follows_tx.contains(this.non_terminal)) {
+            // std.debug.print("\"{s}\".update_follows {}\n", .{ this.non_terminal, this.follows });
+            _ = try follows_tx.add(this.non_terminal);
+            for (this.sequences.items) |*seq| {
+                count += try seq.build_follows(this.follows);
+            }
+            _ = follows_tx.remove(this.non_terminal);
+        }
+        return count;
+    }
+
+    pub fn check_LL1(this: Rule, allocator: Allocator) !bool {
+        const has_empty = blk: {
+            for (this.sequences.items) |seq| {
+                if (seq.symbols.items.len == 0) {
+                    break :blk true;
                 }
-                ret = ret and ok;
-                if (r_j.firsts().contains(.Empty)) {
-                    ok = (try r_i.firsts()).disjoint(try r_i.follows());
-                    if (!ok) {
-                        std.debug.print("Grammar not LL(1): non-terminal {s} - Firsts for rule {} follows not disjoint\n", .{ this.name, i });
+            }
+            break :blk false;
+        };
+        for (this.sequences.items, 0..) |seq, i| {
+            if (try seq.check_LL1(allocator, seq.firsts, this.sequences.items[i + 1 ..], i + 1)) |j| {
+                std.debug.print("LL1 check: first sets {} ({}) and {} ({}) of non-terminal '{s}' are not disjoint\n", .{ i, this.sequences.items[i].firsts, j, this.sequences.items[j].firsts, this.non_terminal });
+                return false;
+            }
+            if (this.sequences.items.len > 1) {
+                if (seq.symbols.items.len > 0) {
+                    if (seq.firsts.contains(.Empty)) {
+                        std.debug.print("LL1 check: first set {} of non-terminal '{s}' derives the Empty symbol\n", .{ i, this.non_terminal });
+                        return false;
                     }
-                    ret = ret and ok;
-                    ret = ret and (try r_i.firsts()).disjoint(try this.follows());
+                } else if (has_empty) {
+                    var f_i_intersect_followA = Set.init(allocator);
+                    defer f_i_intersect_followA.deinit();
+                    _ = try f_i_intersect_followA.union_with(seq.firsts);
+                    _ = f_i_intersect_followA.intersect(this.follows);
+                    if (!f_i_intersect_followA.empty()) {
+                        std.debug.print("LL1 check: follow set and first set {} of non-terminal '{s}' are not disjoint\n", .{ i, this.non_terminal });
+                        return false;
+                    }
                 }
             }
         }
-        return ret;
+        return true;
     }
 
-    pub fn build_parse_table(this: *NonTerminal, grammar: Grammar) !void {
-        this.parse_table.clearRetainingCapacity();
-        for (this.rules.items) |*rule| {
-            for (rule.firsts) |first| {
-                try rule.add_parse_table_entry(this, first, grammar);
+    fn add_transition(this: *Rule, symbol: Symbol, ix: usize) !void {
+        switch (symbol) {
+            .Empty => {
+                var it = this.follows.iterator();
+                while (it.next()) |follow| {
+                    try this.add_transition(follow, ix);
+                }
+            },
+            else => try this.parse_table.put(symbol, ix),
+        }
+    }
+
+    pub fn build_parse_table(this: *Rule) !void {
+        for (this.sequences.items, 0..) |seq, ix| {
+            var f_ix = Set.init(this.grammar.allocator);
+            defer f_ix.deinit();
+            _ = try Symbol.firsts(seq.symbols.items, this.grammar, &f_ix);
+            var it = f_ix.iterator();
+            while (it.next()) |symbol| {
+                try this.add_transition(symbol, ix);
             }
+        }
+    }
+
+    pub fn dump_parse_table(this: Rule) void {
+        var it = this.parse_table.iterator();
+        while (it.next()) |entry| {
+            std.debug.print("{s}:{} => {s}\n", .{ this.non_terminal, entry.key_ptr.*, this.sequences.items[entry.value_ptr.*] });
         }
     }
 };
 
-pub const Rule = struct {
-    allocator: Allocator,
-    entries: std.ArrayList(RuleEntry),
-    firsts_: ?Set,
-    follows_: ?Set,
+pub const Sequence = struct {
+    grammar: *Grammar,
+    symbols: std.ArrayList(Symbol),
+    firsts: Set,
 
-    pub fn init(allocator: Allocator) Rule {
+    pub fn init(grammar: *Grammar) Sequence {
         return .{
-            .allocator = allocator,
-            .entries = std.ArrayList(RuleEntry).init(allocator),
-            .firsts_ = null,
-            .follows_ = null,
+            .grammar = grammar,
+            .symbols = std.ArrayList(Symbol).init(grammar.allocator),
+            .firsts = Set.init(grammar.allocator),
         };
     }
 
-    pub fn deinit(this: *Rule) void {
+    pub fn deinit(this: *Sequence) void {
         this.entries.deinit();
         if (this.first != undefined) {
             this.firsts.deinit();
@@ -340,69 +430,65 @@ pub const Rule = struct {
         this.follows.deinit();
     }
 
-    pub fn format(this: Rule, comptime _: []const u8, _: std.fmt.FormatOptions, w: anytype) !void {
-        if (this.entries.items.len == 0) {
+    pub fn format(this: Sequence, comptime _: []const u8, _: std.fmt.FormatOptions, w: anytype) !void {
+        if (this.symbols.items.len == 0) {
             _ = try w.write(" ε");
         } else {
-            for (this.entries.items) |entry| {
-                try w.print("{}", .{entry});
+            for (this.symbols.items) |entry| {
+                try w.print(" {}", .{entry});
             }
         }
     }
 
-    pub fn firsts(this: *Rule, grammar: Grammar) !*Set {
-        //     First (Y1Y2..Yk) is everything in First(Y1) <except for ε >
-        //       as well as everything in First(Y2..Yk)
-        //     If First(Y1) First(Y2)..First(Yk) all contain ε
-        //       add ε to First(Y1Y2..Yk) as well.
+    pub fn build_firsts(this: *Sequence) !i64 {
+        return try Symbol.firsts(this.symbols.items, this.grammar, &this.firsts);
+    }
 
-        if (this.firsts_) |*f| {
-            return f;
-        }
-
-        var f = Set.init(this.allocator);
-        try f.add(.Empty);
-        for (this.entries.items) |e| {
-            f.remove(.Empty);
-            try e.firsts(grammar, f);
-            if (!f.contains(.Empty)) {
-                break;
+    pub fn build_follows(this: *Sequence, rule_follows: Set) !usize {
+        var count: usize = 0;
+        for (this.symbols.items, 0..) |symbol, ix| {
+            switch (symbol) {
+                .NonTerminal => |nt| {
+                    const non_terminal = this.grammar.rules.getPtr(nt) orelse return error.RuleNotFound;
+                    // std.debug.print("\"{s}\".build_follows({})\n", .{ nt, rule_follows });
+                    var f = Set.init(this.grammar.allocator);
+                    defer f.deinit();
+                    _ = try Symbol.firsts(this.symbols.items[ix + 1 ..], this.grammar, &f);
+                    if (f.contains(.Empty)) {
+                        count += try non_terminal.add_to_follows(rule_follows);
+                        _ = f.remove(.Empty);
+                    }
+                    count += try non_terminal.add_to_follows(f);
+                },
+                else => {},
             }
         }
-        this.firsts_ = f;
-        return this.firsts_;
+        return count;
     }
 
-    pub fn follows(this: *Rule, grammar: Grammar) !void {
-        _ = this;
-        _ = grammar;
-    }
-
-    fn add_parse_table_entry(this: *Rule, non_terminal: NonTerminal, entry: RuleEntry, grammar: Grammar) !void {
-        switch (entry) {
-            .End => {
-                for (non_terminal.follows(grammar)) |follow| {
-                    try this.add_parse_table_entry(non_terminal, follow, grammar);
-                }
-            },
-            else => {
-                if (!non_terminal.parse_table.contains(entry)) {
-                    try non_terminal.parse_table.put(entry, this.index);
-                }
-            },
+    pub fn check_LL1(this: Sequence, allocator: Allocator, f_i: Set, tail: []Sequence, j: usize) !?usize {
+        if (tail.len == 0) {
+            return null;
         }
+        var f_j = Set.init(allocator);
+        defer f_j.deinit();
+        _ = try f_j.union_with(tail[0].firsts);
+        _ = f_j.intersect(f_i);
+        if (!f_j.empty()) {
+            return j;
+        }
+        return this.check_LL1(allocator, f_i, tail[1..], j + 1);
     }
 };
 
-const RuleEntry = union(enum) {
+pub const Symbol = union(enum) {
     Empty: void,
     End: void,
     Action: GrammarAction,
     Terminal: lxr.Token.Kind,
     NonTerminal: []const u8,
 
-    pub fn format(this: RuleEntry, comptime _: []const u8, _: std.fmt.FormatOptions, w: anytype) !void {
-        _ = try w.write(" ");
+    pub fn format(this: Symbol, comptime _: []const u8, _: std.fmt.FormatOptions, w: anytype) !void {
         switch (this) {
             .Empty => _ = try w.write("ε"),
             .End => _ = try w.write("☐"),
@@ -412,22 +498,31 @@ const RuleEntry = union(enum) {
         }
     }
 
-    pub fn firsts(this: RuleEntry, grammar: Grammar, f: *Set) !void {
-        switch (this) {
-            .End => unreachable,
-            .Empty, .Action => {},
-            .Terminal => {
-                // If X is a terminal then First(X) is just X!
-                f.add(this);
-            },
+    pub fn firsts(entries: []Symbol, grammar: *Grammar, f: *Set) GrammarError!i64 {
+        if (entries.len == 0) {
+            // std.debug.print("Symbol.firsts: entries empty\n", .{});
+            return @intCast(try f.add(.Empty));
+        }
+        var count: i64 = 0;
+        // std.debug.print("Symbol.firsts: len: {} entries[0]: {}\n", .{ entries.len, entries[0] });
+        count -= @intCast(f.remove(.Empty));
+        var firsts_of_entries = Set.init(grammar.allocator);
+        defer firsts_of_entries.deinit();
+        switch (entries[0]) {
+            .End, .Empty, .Terminal => _ = try firsts_of_entries.add(entries[0]),
+            .Action => {}, // FIXME
             .NonTerminal => |nt_name| {
-                if (grammar.non_terminals.get(nt_name)) |nt| {
-                    try f.addAll(try nt.firsts(grammar));
-                } else {
-                    return error.NonTerminalNotFound;
-                }
+                const rule = grammar.rules.getPtr(nt_name) orelse return error.RuleNotFound;
+                count += @intCast(try rule.update_firsts());
+                _ = try firsts_of_entries.union_with(rule.firsts);
             },
         }
+        count += @intCast(try f.union_with(firsts_of_entries));
+        // std.debug.print("Symbol.firsts: f: {}\n", .{f});
+        if (firsts_of_entries.contains(.Empty)) {
+            count += @intCast(try firsts(entries[1..], grammar, f));
+        }
+        return count;
     }
 };
 
@@ -436,11 +531,9 @@ pub const Grammar = struct {
     lexer: lxr.Config,
     resolver: Resolver,
     variables: GrammarVariables,
-    non_terminals: std.StringArrayHashMap(NonTerminal),
+    rules: std.StringArrayHashMap(Rule),
     entry_point: ?[]const u8 = null,
     strategy: ParsingStrategy = .TopDown,
-    prefix: ?[]const u8 = null,
-    lib: ?[]const u8 = null,
     build_func: ?[]const u8 = null,
     libs: std.ArrayList([]const u8),
     dryrun: bool = false,
@@ -448,16 +541,17 @@ pub const Grammar = struct {
     pub fn init(allocator: Allocator) !Grammar {
         return .{
             .allocator = allocator,
+            .lexer = lxr.Config.init(allocator),
+            .resolver = Resolver.init(null, null),
             .variables = GrammarVariables.init(allocator),
-            .non_terminals = std.StringArrayHashMap(NonTerminal).init(allocator),
+            .rules = std.StringArrayHashMap(Rule).init(allocator),
             .libs = std.ArrayList([]const u8).init(allocator),
         };
     }
 
     pub fn format(this: Grammar, comptime _: []const u8, _: std.fmt.FormatOptions, w: anytype) !void {
-        var it = this.non_terminals.valueIterator();
-        while (it.next()) |nt| {
-            try w.print("{}\n", .{nt});
+        for (this.rules.values()) |r| {
+            try w.print("{}\n", .{r});
         }
     }
 
@@ -475,75 +569,166 @@ pub const Grammar = struct {
         }
     }
 
-    fn follows_reducer(this: *Grammar, non_terminal: *NonTerminal, current_sum: usize) !bool {
-        var next: ?*RuleEntry = null;
-
-        var next_firsts = std.ArrayList(usize).init(this.allocator);
-        defer next_firsts.deinit();
-        for (non_terminal.rules.items) |rule| {
-            for (rule.entries.items, 0..) |*rule_entry, j| {
-                const tail = non_terminal.rules.items[j + 1 ..];
-                switch (rule_entry) {
-                    .NonTerminal => |nt_name| {
-                        next_firsts.clear();
-                        next = null;
-                        for (tail) |it| {
-                            if (next == null) {
-                                next = it;
-                            }
-                            next_firsts.union_with(it.firsts);
-                            if (!next_firsts.contains(.Empty)) {
-                                break;
-                            }
-                        }
-                        const nt: NonTerminal = this.non_terminals.get(nt_name) orelse unreachable;
-                        if (next == null or next_firsts.contains(.Empty)) {
-                            try nt.follows.union_with(non_terminal.follows);
-                        }
-                        next_firsts.remove(.Empty);
-                        try nt.follows.union_with(next_firsts);
-                    },
-                    else => {},
-                }
+    pub fn build_firsts(this: *Grammar) !void {
+        firsts_tx.clear();
+        while (true) {
+            var count: i64 = 0;
+            for (this.rules.values()) |*rule| {
+                count += try rule.update_firsts();
             }
-        }
-        return current_sum == non_terminal.follows.size();
-    }
-
-    fn build_firsts(this: *Grammar) !void {
-        var it = this.non_terminals.keyIterator();
-        while (it.next()) |nt| {
-            try nt.build_firsts(this);
+            if (count == 0) break;
         }
     }
 
-    fn build_follows(this: *Grammar) !void {
-        var done = false;
-        while (!done) {
-            var iter = this.non_terminals.keyIterator();
-            while (iter.next()) |nt| {
-                done = done and try this.follows_reducer(nt);
+    pub fn build_follows(this: *Grammar) !void {
+        follows_tx.clear();
+        if (this.entry_point) |ep| {
+            if (this.rules.getPtr(ep)) |rule| {
+                _ = try rule.follows.add(.End);
             }
         }
-    }
-
-    fn check_LL1(this: Grammar) bool {
-        var it = this.non_terminals.keyIterator();
-        while (it.next()) |non_terminal| {
-            if (!non_terminal.check_LL1(this)) {
-                return false;
+        while (true) {
+            var count: usize = 0;
+            for (this.rules.values()) |*rule| {
+                count += try rule.update_follows();
             }
+            if (count == 0) break;
         }
-        return true;
     }
 
     pub fn analyze(this: *Grammar) !bool {
         try this.build_firsts();
         try this.build_follows();
-        const ll_1 = try this.check_LL1();
-        if (ll_1) {
-            this.build_parse_table();
+        return this.check_LL1();
+    }
+
+    pub fn check_LL1(this: Grammar) !bool {
+        var ok = true;
+        for (this.rules.values()) |rule| {
+            ok = ok and try rule.check_LL1(this.allocator);
         }
-        return ll_1;
+        return ok;
+    }
+
+    pub fn build_parse_table(this: *Grammar) !bool {
+        if (!try this.analyze()) return false;
+        for (this.rules.values()) |*rule| {
+            try rule.build_parse_table();
+        }
+        return true;
+    }
+
+    pub fn dump_parse_table(this: Grammar) void {
+        for (this.rules.values()) |rule| {
+            rule.dump_parse_table();
+        }
     }
 };
+
+test "Build Grammar" {
+    _ =
+        \\ 
+        \\program    := [ init ] statements [ done ]
+        \\           ;
+        \\
+        \\statements := [ stmt_start ] statement [ stmt_end ] statements
+        \\           |
+        \\           ;
+        \\
+    ;
+    var grammar = try Grammar.init(std.heap.c_allocator);
+    var r = Rule.init(&grammar, "program");
+    var seq = Sequence.init(&grammar);
+    try seq.symbols.append(.{ .Action = try GrammarAction.init(grammar.allocator, grammar.resolver, "init", null) });
+    try seq.symbols.append(.{ .NonTerminal = "statements" });
+    try seq.symbols.append(.{ .Action = try GrammarAction.init(grammar.allocator, grammar.resolver, "done", null) });
+    try r.sequences.append(seq);
+    try grammar.rules.put(r.non_terminal, r);
+    r = Rule.init(&grammar, "statements");
+    seq = Sequence.init(&grammar);
+    try seq.symbols.append(.{ .Action = try GrammarAction.init(grammar.allocator, grammar.resolver, "stmt_start", null) });
+    try seq.symbols.append(.{ .NonTerminal = "statement" });
+    try seq.symbols.append(.{ .Action = try GrammarAction.init(grammar.allocator, grammar.resolver, "stmt_end", null) });
+    try seq.symbols.append(.{ .NonTerminal = "statements" });
+    try r.sequences.append(seq);
+    seq = Sequence.init(&grammar);
+    try r.sequences.append(seq);
+    try grammar.rules.put(r.non_terminal, r);
+    std.debug.print("\n{}", .{grammar});
+}
+
+fn add_rule(grammar: *Grammar, nt: []const u8, symbols: []const []const u8) !*Rule {
+    var r = Rule.init(grammar, nt);
+    if (symbols.len > 0) {
+        var seq = Sequence.init(r.grammar);
+        for (symbols) |s| {
+            try seq.symbols.append(.{ .NonTerminal = s });
+        }
+        try r.sequences.append(seq);
+    }
+    try grammar.rules.put(r.non_terminal, r);
+    return grammar.rules.getPtr(r.non_terminal) orelse unreachable;
+}
+
+fn add_sequence(rule: *Rule, symbols: []const Symbol) !void {
+    var seq = Sequence.init(rule.grammar);
+    for (symbols) |s| {
+        try seq.symbols.append(s);
+    }
+    try rule.sequences.append(seq);
+}
+
+fn build_test_grammar() !Grammar {
+    _ =
+        \\E          := T Eopt ;
+        \\Eopt       := '+' T Eopt |  '-' T Eopt | ;
+        \\T          := F Topt ;
+        \\Topt       := '*' F Topt |  '/' F Topt | ;
+        \\F          := 'd' |  '(' E ')' ;
+        \\
+    ;
+
+    var grammar = try Grammar.init(std.heap.c_allocator);
+    _ = try add_rule(&grammar, "E", &[_][]const u8{ "T", "Eopt" });
+    var rule = try add_rule(&grammar, "Eopt", &[_][]const u8{});
+    try add_sequence(rule, &[_]Symbol{ .{ .Terminal = .{ .Symbol = '+' } }, .{ .NonTerminal = "T" }, .{ .NonTerminal = "Eopt" } });
+    try add_sequence(rule, &[_]Symbol{ .{ .Terminal = .{ .Symbol = '-' } }, .{ .NonTerminal = "T" }, .{ .NonTerminal = "Eopt" } });
+    try add_sequence(rule, &[_]Symbol{});
+    _ = try add_rule(&grammar, "T", &[_][]const u8{ "F", "Topt" });
+    rule = try add_rule(&grammar, "Topt", &[_][]const u8{});
+    try add_sequence(rule, &[_]Symbol{ .{ .Terminal = .{ .Symbol = '*' } }, .{ .NonTerminal = "F" }, .{ .NonTerminal = "Topt" } });
+    try add_sequence(rule, &[_]Symbol{ .{ .Terminal = .{ .Symbol = '/' } }, .{ .NonTerminal = "F" }, .{ .NonTerminal = "Topt" } });
+    try add_sequence(rule, &[_]Symbol{});
+    rule = try add_rule(&grammar, "F", &[_][]const u8{});
+    try add_sequence(rule, &[_]Symbol{.{ .Terminal = .Number }});
+    try add_sequence(rule, &[_]Symbol{ .{ .Terminal = .{ .Symbol = '(' } }, .{ .NonTerminal = "E" }, .{ .Terminal = .{ .Symbol = ')' } } });
+    _ = try grammar.build_parse_table();
+    return grammar;
+}
+
+test "Firsts" {
+    const grammar = try build_test_grammar();
+    std.debug.print("\n", .{});
+    for (grammar.rules.values()) |*r| {
+        std.debug.print("Firsts {s}: {}\n", .{ r.non_terminal, r.firsts });
+    }
+}
+
+test "Follows" {
+    const grammar = try build_test_grammar();
+    std.debug.print("\n", .{});
+    for (grammar.rules.values()) |*r| {
+        std.debug.print("Follows {s}: {}\n", .{ r.non_terminal, r.follows });
+    }
+}
+
+test "Analyze" {
+    const grammar = try build_test_grammar();
+    try std.testing.expect(try grammar.check_LL1());
+}
+
+test "Parse Table" {
+    const grammar = try build_test_grammar();
+    std.debug.print("\n", .{});
+    grammar.dump_parse_table();
+}

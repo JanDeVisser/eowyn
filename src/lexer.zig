@@ -132,7 +132,7 @@ pub const Token = struct {
             .Identifier => init(.Identifier, v),
             .Keyword => init(.{
                 .Keyword = blk: {
-                    for (lexer.keywords.keywords, 0..) |kw, ix| {
+                    for (lexer.config.keywords.keywords.keywords, 0..) |kw, ix| {
                         if (std.ascii.eqlIgnoreCase(kw, v)) {
                             break :blk ix;
                         }
@@ -149,7 +149,7 @@ pub const Token = struct {
                 .Symbol = v[0],
             }, v),
             .Whitespace => init(.Whitespace, v),
-            .Comment => init(.Comment, v),
+            .Comment => unreachable,
         };
     }
 
@@ -182,37 +182,19 @@ pub const Token = struct {
         Whitespace: void,
         Comment: []const u8,
 
-        pub fn from_code(c: usize) Kind {
-            return if (c == '"' or c == '\'' or c == '`')
-                .{ .String = @truncate(code) }
-            else if (c >= 32 and c <= 255)
-                .{ .Symbol = @truncate(code) }
-            else if (c > 255)
-                .{ .Keyword = c - 256 }
-            else
-                @enumFromInt(c);
-        }
-
-        pub fn code(this: Kind) usize {
-            return switch (this) {
-                .Keyword => |kw| 256 + kw,
-                .Symbol => |s| @intCast(s),
-                .String => |quote| @intCast(quote),
-                else => @intFromEnum(this.kind),
-            };
-        }
-
         pub fn format(this: Kind, comptime fmt: []const u8, _: std.fmt.FormatOptions, w: anytype) !void {
             if (std.mem.eql(u8, fmt, "s")) {
                 switch (this) {
-                    .Keyword => |k| try w.print("{}kw", .{k}),
-                    .String, .Symbol => |c| try w.print("{c}s", .{c}),
-                    else => try w.print("{s}", .{@tagName(this)}),
+                    .Keyword => |k| try w.print("\"{}\"", .{k}),
+                    .String, .Symbol => |c| try w.print("'{c}'", .{c}),
+                    .Comment => |marker| try w.print("{s}", .{marker}),
+                    else => try w.print("'{s}'", .{@tagName(this)}),
                 }
             } else {
                 switch (this) {
                     .Keyword => |k| try w.print(".{{ .Keyword = {} }}", .{k}),
                     .String, .Symbol => |c| try w.print(".{{ .{s} = '{c}' }}", .{ @tagName(this), c }),
+                    .Comment => |marker| try w.print(".{{ .{s} = \"{s}\" }}", .{ @tagName(this), marker }),
                     else => try w.print(".{s}", .{@tagName(this)}),
                 }
             }
@@ -422,7 +404,7 @@ pub const Lexer = struct {
     allocator: Allocator,
     config: Config,
     source: []const u8,
-    ignore: set.HashSet(Token.KindTag),
+    ignore: set.HashSet(Token.KindTag, null),
     current: ?Token = null,
     pos: u64 = 0,
     line: u64 = 0,
@@ -431,17 +413,17 @@ pub const Lexer = struct {
     unescaped_strings: std.ArrayList([]const u8),
 
     pub fn init(allocator: Allocator, config: Config, source: []const u8) !Lexer {
-        var ignore = set.HashSet(Token.KindTag).init(allocator);
+        var ignore = set.HashSet(Token.KindTag, null).init(allocator);
         if (config.whitespace.on) {
             if (config.whitespace.ignore_nl) {
-                try ignore.add(.Newline);
+                _ = try ignore.add(.Newline);
             }
             if (config.whitespace.ignore_ws) {
-                try ignore.add(.Whitespace);
+                _ = try ignore.add(.Whitespace);
             }
         }
         if (config.comment.ignore) {
-            try ignore.add(.Comment);
+            _ = try ignore.add(.Comment);
         }
         return .{
             .allocator = allocator,
