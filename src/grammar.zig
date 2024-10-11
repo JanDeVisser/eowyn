@@ -49,15 +49,10 @@ pub const SymbolCtx = struct {
 pub const Set = hashset.HashSet(Symbol, SymbolCtx);
 pub const Resolver = resolve.Resolver;
 
-pub const RuleDef = 200;
-pub const RuleDefStr = ":=";
-
 pub const LibStr = "lib";
 pub const PrefixStr = "prefix";
 pub const StrategyStr = "strategy";
 pub const LexerStr = "lexer";
-pub const GrammarBuildFuncStr = "grammar_buildfunc";
-pub const LexercfgBuildFuncStr = "lexercfg_buildfunc";
 
 pub const ParsingStrategy = enum {
     TopDown,
@@ -143,17 +138,14 @@ pub const GrammarAction = struct {
         };
     }
 
-    pub fn action(this: *GrammarAction) !Action {
-        if (this.func) |f| {
-            return f;
-        }
-        this.func = try this.resolver.resolve(Action, this.full_name);
-        return this.func;
+    pub fn action(this: GrammarAction) !Action {
+        return try this.resolver.resolve(Action, this.full_name) orelse return error.ActionUnresolved;
     }
 
-    pub fn call(this: *GrammarAction, target: *anyopaque) !void {
+    pub fn call(this: GrammarAction, target: *anyopaque) !void {
         const fnc = try this.action();
-        try fnc(target, if (this.data) &this.data else null);
+        var value: ?Value = this.data orelse null;
+        fnc(target, if (value != null) &(value.?) else null);
     }
 
     pub fn eql(this: GrammarAction, other: GrammarAction) bool {
@@ -254,7 +246,7 @@ pub const GrammarVariables = struct {
 //   then everything in FOLLOW(A) is in FOLLOW(B)
 //
 
-pub const GrammarError = std.mem.Allocator.Error || error{RuleNotFound};
+pub const GrammarError = std.mem.Allocator.Error || error{ RuleNotFound, ActionUnresolved };
 
 threadlocal var firsts_tx = hashset.StringSet.init(std.heap.c_allocator);
 threadlocal var follows_tx = hashset.StringSet.init(std.heap.c_allocator);
@@ -510,7 +502,7 @@ pub const Symbol = union(enum) {
         defer firsts_of_entries.deinit();
         switch (entries[0]) {
             .End, .Empty, .Terminal => _ = try firsts_of_entries.add(entries[0]),
-            .Action => {}, // FIXME
+            .Action => count += @intCast(try firsts(entries[1..], grammar, f)), // Skip to next entry
             .NonTerminal => |nt_name| {
                 const rule = grammar.rules.getPtr(nt_name) orelse return error.RuleNotFound;
                 count += @intCast(try rule.update_firsts());
@@ -678,7 +670,7 @@ fn add_sequence(rule: *Rule, symbols: []const Symbol) !void {
     try rule.sequences.append(seq);
 }
 
-fn build_test_grammar() !Grammar {
+pub fn build_test_grammar() !Grammar {
     _ =
         \\E          := T Eopt ;
         \\Eopt       := '+' T Eopt |  '-' T Eopt | ;
@@ -689,6 +681,8 @@ fn build_test_grammar() !Grammar {
     ;
 
     var grammar = try Grammar.init(std.heap.c_allocator);
+    grammar.lexer.number.signed = false;
+    grammar.entry_point = "E";
     _ = try add_rule(&grammar, "E", &[_][]const u8{ "T", "Eopt" });
     var rule = try add_rule(&grammar, "Eopt", &[_][]const u8{});
     try add_sequence(rule, &[_]Symbol{ .{ .Terminal = .{ .Symbol = '+' } }, .{ .NonTerminal = "T" }, .{ .NonTerminal = "Eopt" } });

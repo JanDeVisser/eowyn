@@ -24,8 +24,8 @@ pub const Resolver = struct {
             return @as(FncType, @alignCast(@ptrCast(f)));
         }
         if (this.prefix) |p| {
-            try std.fmt.bufPrintZ(&buf, "{s}{s}", .{ p, func_name });
-            if (std.c.dlsym(l, funcZ)) |f| {
+            const prefixed_funcZ = try std.fmt.bufPrintZ(&buf, "{s}{s}", .{ p, func_name });
+            if (std.c.dlsym(l, prefixed_funcZ)) |f| {
                 return @as(FncType, @alignCast(@ptrCast(f)));
             }
         }

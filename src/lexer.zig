@@ -104,7 +104,7 @@ pub const Token = struct {
     text: []const u8,
     kind: Kind,
 
-    fn init(kind: Kind, text: []const u8) Token {
+    pub fn init(kind: Kind, text: []const u8) Token {
         return .{
             .kind = kind,
             .raw_text = text,
@@ -497,15 +497,15 @@ pub const Lexer = struct {
     pub fn advance(this: *Lexer) void {
         // std.debug.print("advance() ", .{});
         const token = this.current orelse unreachable;
-        this.pos += token.text.len;
+        this.pos += token.raw_text.len;
         this.source = this.source[token.raw_text.len..];
         this.current = null;
     }
 
     pub fn next(this: *Lexer) ?Token {
-        if (this.peek_next()) |_| {
+        if (this.peek_next()) |t| {
             this.advance();
-            return;
+            return t;
         }
         return null;
     }
