@@ -3,62 +3,119 @@ const Allocator = std.mem.Allocator;
 
 const grm = @import("grammar.zig");
 const lxr = @import("lexer.zig");
+const grmparser = @import("grammarparser.zig");
+const parser = @import("parser.zig");
 
 const Grammar = grm.Grammar;
 const Rule = grm.Rule;
 const Sequence = grm.Sequence;
 const Symbol = grm.Symbol;
+const GrammarParser = grmparser.GrammarParser;
 
-fn add_rule(grammar: *Grammar, nt: []const u8, symbols: []const []const u8) !*Rule {
-    var r = Rule.init(grammar, nt);
-    if (symbols.len > 0) {
-        var seq = Sequence.init(r.grammar);
-        for (symbols) |s| {
-            try seq.symbols.append(.{ .NonTerminal = s });
+const eowyn_grammar: []const u8 = @embedFile("eowyn.grammar");
+
+const calc_grammar =
+    \\%
+    \\  lexer: "number: signed=false" 
+    \\  parser: "init: init"
+    \\  parser: "deinit: deinit"
+    \\  parser: "startup: startup"
+    \\  parser: "cleanup: cleanup"
+    \\%
+    \\Main       := [init] E [cleanup];
+    \\E          := T Eopt ;
+    \\Eopt       := '+' T [add] Eopt |  '-' T [subtract] Eopt | ;
+    \\T          := F Topt ;
+    \\Topt       := '*' F [multiply] Topt |  '/' F [divide] Topt | ;
+    \\F          := 'd' [push_number] |  '(' E ')' ;
+    \\
+;
+
+fn pop(this: *parser.Parser) i64 {
+    var stack: *std.ArrayList(grm.Value) = @alignCast(@ptrCast(this.impl orelse @panic("Stack not initialized")));
+    return if (stack.popOrNull()) |v| blk: {
+        switch (v) {
+            .Int => |i| break :blk i,
+            else => std.debug.panic("Invalid value '{}' on stack", .{v}),
         }
-        try r.sequences.append(seq);
-    }
-    try grammar.rules.put(r.non_terminal, r);
-    return grammar.rules.getPtr(r.non_terminal) orelse unreachable;
+    } else {
+        @panic("pop(): stack underflow");
+    };
 }
 
-fn add_sequence(rule: *Rule, symbols: []const Symbol) !void {
-    var seq = Sequence.init(rule.grammar);
-    for (symbols) |s| {
-        try seq.symbols.append(s);
-    }
-    try rule.sequences.append(seq);
+fn push(this: *parser.Parser, i: i64) void {
+    var stack: *std.ArrayList(grm.Value) = @alignCast(@ptrCast(this.impl orelse @panic("Stack not initialized")));
+    stack.append(.{
+        .Int = i,
+    }) catch @panic("Out of memory");
 }
 
-fn build_test_grammar() !Grammar {
-    _ =
-        \\E          := T Eopt ;
-        \\Eopt       := '+' T Eopt |  '-' T Eopt | ;
-        \\T          := F Topt ;
-        \\Topt       := '*' F Topt |  '/' F Topt | ;
-        \\F          := 'd' |  '(' E ')' ;
-        \\
-    ;
+export fn init(this: *parser.Parser) callconv(.C) void {
+    this.impl = this.allocator.create(std.ArrayList(grm.Value)) catch @panic("Out of memory");
+    const stack: *std.ArrayList(grm.Value) = @alignCast(@ptrCast(this.impl));
+    stack.* = std.ArrayList(grm.Value).init(this.allocator);
+}
 
-    var grammar = try Grammar.init(std.heap.c_allocator);
-    _ = try add_rule(&grammar, "E", &[_][]const u8{ "T", "Eopt" });
-    var rule = try add_rule(&grammar, "Eopt", &[_][]const u8{});
-    try add_sequence(rule, &[_]Symbol{ .{ .Terminal = .{ .Symbol = '+' } }, .{ .NonTerminal = "T" }, .{ .NonTerminal = "Eopt" } });
-    try add_sequence(rule, &[_]Symbol{ .{ .Terminal = .{ .Symbol = '-' } }, .{ .NonTerminal = "T" }, .{ .NonTerminal = "Eopt" } });
-    try add_sequence(rule, &[_]Symbol{});
-    _ = try add_rule(&grammar, "T", &[_][]const u8{ "F", "Topt" });
-    rule = try add_rule(&grammar, "Topt", &[_][]const u8{});
-    try add_sequence(rule, &[_]Symbol{ .{ .Terminal = .{ .Symbol = '*' } }, .{ .NonTerminal = "F" }, .{ .NonTerminal = "Topt" } });
-    try add_sequence(rule, &[_]Symbol{ .{ .Terminal = .{ .Symbol = '/' } }, .{ .NonTerminal = "F" }, .{ .NonTerminal = "Topt" } });
-    try add_sequence(rule, &[_]Symbol{});
-    rule = try add_rule(&grammar, "F", &[_][]const u8{});
-    try add_sequence(rule, &[_]Symbol{.{ .Terminal = .Number }});
-    try add_sequence(rule, &[_]Symbol{ .{ .Terminal = .{ .Symbol = '(' } }, .{ .NonTerminal = "E" }, .{ .Terminal = .{ .Symbol = ')' } } });
-    _ = try grammar.build_parse_table();
-    return grammar;
+export fn deinit(this: *parser.Parser) callconv(.C) void {
+    std.debug.print("{}\n", .{pop(this)});
+    const stack: *std.ArrayList(grm.Value) = @alignCast(@ptrCast(this.impl));
+    this.allocator.destroy(stack);
+}
+
+export fn startup(this: *parser.Parser) void {
+    const stack: *std.ArrayList(grm.Value) = @alignCast(@ptrCast(this.impl));
+    stack.clearRetainingCapacity();
+}
+
+export fn cleanup(this: *parser.Parser) void {
+    const stack: *std.ArrayList(grm.Value) = @alignCast(@ptrCast(this.impl));
+    if (stack.popOrNull()) |v| {
+        switch (v) {
+            .Int => |i| std.debug.print("{}\n", .{i}),
+            else => {},
+        }
+    }
+    if (stack.items.len > 0) {
+        @panic("Stack not empty on cleanup");
+    }
+}
+
+export fn push_number(this: *parser.Parser, _: ?*grm.Value) callconv(.C) void {
+    switch (this.last_token.kind) {
+        .Number => {
+            const v: grm.Value = .{ .Int = std.fmt.parseInt(i64, this.last_token.text, 0) catch @panic("Could not parse number") };
+            var stack: *std.ArrayList(grm.Value) = @alignCast(@ptrCast(this.impl orelse @panic("Stack not initialized")));
+            stack.append(v) catch @panic("Out of memory");
+        },
+        else => std.debug.panic("Invalid token '{}' in push_number", .{this.last_token}),
+    }
+}
+
+export fn add(this: *parser.Parser, _: ?*grm.Value) callconv(.C) void {
+    push(this, pop(this) + pop(this));
+}
+
+export fn subtract(this: *parser.Parser, _: ?*grm.Value) callconv(.C) void {
+    // Second operand sits on top of the stack so we have to switch the
+    // subtraction:
+    push(this, -pop(this) + pop(this));
+}
+
+export fn multiply(this: *parser.Parser, _: ?*grm.Value) callconv(.C) void {
+    push(this, pop(this) * pop(this));
+}
+
+export fn divide(this: *parser.Parser, _: ?*grm.Value) callconv(.C) void {
+    // Denominator sits on top of the stack so we have to switch the
+    // divide:
+    const denominator = pop(this);
+    push(this, @divFloor(pop(this), denominator));
 }
 
 pub fn main() !void {
-    const grammar = try build_test_grammar();
-    try std.testing.expect(try grammar.check_LL1());
+    var gp = try GrammarParser.init(std.heap.c_allocator, calc_grammar);
+    var grammar = Grammar.init(std.heap.c_allocator);
+    try gp.parse(&grammar);
+    var p = parser.Parser.init(std.heap.c_allocator, grammar);
+    try p.parse("(5*8)+(2*1)");
 }

@@ -3,28 +3,87 @@ const std = @import("std");
 pub extern "c" fn dlopen(path: ?[*:0]const u8, mode: std.c.RTLD) ?*anyopaque;
 
 pub const Resolver = struct {
+    allocator: std.mem.Allocator,
     lib: ?[]const u8,
     prefix: ?[]const u8,
 
-    pub fn init(lib: ?[]const u8, prefix: ?[]const u8) Resolver {
+    const HandleCache = struct {
+        allocator: std.mem.Allocator,
+        app_image: ?*anyopaque = null,
+        handles: std.StringHashMap(*anyopaque),
+
+        pub fn init(allocator: std.mem.Allocator) HandleCache {
+            return .{
+                .allocator = allocator,
+                .handles = std.StringHashMap(*anyopaque).init(allocator),
+            };
+        }
+
+        pub fn deinit(this: *HandleCache) void {
+            for (this.handles.iterator()) |e| {
+                _ = std.c.dlclose(e.value_ptr.*);
+                this.allocator.free(e.key_ptr.*);
+            }
+            if (this.app_image != null) {
+                _ = std.c.dlclose(this.app_image.?);
+            }
+            this.handles.deinit();
+        }
+
+        fn get(this: *HandleCache, lib_name: ?[]const u8) !*anyopaque {
+            return blk: {
+                if (lib_name) |l| {
+                    if (this.handles.get(l)) |h| {
+                        break :blk h;
+                    }
+                    const image = try std.fmt.allocPrintZ(this.allocator, "{s}.dylib", .{l});
+                    defer this.allocator.free(image);
+                    const h = dlopen(image, .{}) orelse return error.NoSuchLibrary;
+                    try this.handles.put(try this.allocator.dupe(u8, image), h);
+                    break :blk h;
+                } else {
+                    break :blk this.app_image orelse app_image_blk: {
+                        this.app_image = dlopen(null, .{}) orelse return error.NoSuchLibrary;
+                        break :app_image_blk this.app_image.?;
+                    };
+                }
+            };
+        }
+    };
+
+    var handle_cache: ?HandleCache = null;
+
+    pub fn init(allocator: std.mem.Allocator, lib: ?[]const u8, prefix: ?[]const u8) Resolver {
         return .{
+            .allocator = allocator,
             .lib = lib,
             .prefix = prefix,
         };
     }
 
+    pub fn deinit(_: *Resolver) void {}
+
+    fn get_handle(this: Resolver, lib_name: ?[]const u8) !*anyopaque {
+        if (handle_cache == null) {
+            handle_cache = HandleCache.init(this.allocator);
+        }
+        if (handle_cache) |*cache| {
+            return try cache.get(lib_name);
+        } else {
+            unreachable;
+        }
+    }
+
     fn try_resolve(this: Resolver, comptime FncType: type, lib_name: ?[]const u8, func_name: []const u8) !?FncType {
-        var buf: [1024]u8 = undefined;
-        const l = blk: {
-            const image: ?[*:0]const u8 = if (lib_name) |l| try std.fmt.bufPrintZ(&buf, "{s}.dylib", .{l}) else null;
-            break :blk dlopen(image, .{}) orelse return error.NoSuchLibrary;
-        };
-        const funcZ = try std.fmt.bufPrintZ(&buf, "{s}", .{func_name});
+        const l = try this.get_handle(lib_name);
+        const funcZ = try std.fmt.allocPrintZ(this.allocator, "{s}", .{func_name});
+        defer this.allocator.free(funcZ);
         if (std.c.dlsym(l, funcZ)) |f| {
             return @as(FncType, @alignCast(@ptrCast(f)));
         }
         if (this.prefix) |p| {
-            const prefixed_funcZ = try std.fmt.bufPrintZ(&buf, "{s}{s}", .{ p, func_name });
+            const prefixed_funcZ = try std.fmt.allocPrintZ(this.allocator, "{s}{s}", .{ p, func_name });
+            defer this.allocator.free(prefixed_funcZ);
             if (std.c.dlsym(l, prefixed_funcZ)) |f| {
                 return @as(FncType, @alignCast(@ptrCast(f)));
             }

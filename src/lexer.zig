@@ -207,54 +207,22 @@ pub const Config = struct {
     comment: Comment,
     identifier: struct {
         on: bool = true,
-
-        const Self = @This();
-
-        fn configure(this: *Self, key: []const u8, value: ?[]const u8) !void {
-            _ = this;
-            _ = key;
-            _ = value;
-        }
     },
 
     keywords: struct {
         on: bool = true,
         keywords: Keywords = .{},
         operators: Operators = .{},
-
-        const Self = @This();
-
-        fn configure(this: *Self, key: []const u8, value: ?[]const u8) !void {
-            _ = this;
-            _ = key;
-            _ = value;
-        }
     },
 
     number: struct {
         on: bool = true,
-        signed: bool = true,
-
-        const Self = @This();
-
-        fn configure(this: *Self, key: []const u8, value: ?[]const u8) !void {
-            _ = this;
-            _ = key;
-            _ = value;
-        }
+        signed: bool = false,
     },
 
     qstring: struct {
         on: bool = true,
         quotes: []const u8 = "\"'`",
-
-        const Self = @This();
-
-        fn configure(this: *Self, key: []const u8, value: ?[]const u8) !void {
-            _ = this;
-            _ = key;
-            _ = value;
-        }
     },
 
     whitespace: struct {
@@ -264,10 +232,17 @@ pub const Config = struct {
 
         const Self = @This();
 
-        fn configure(this: *Self, key: []const u8, value: ?[]const u8) !void {
-            _ = this;
-            _ = key;
-            _ = value;
+        fn configure(this: *Self, key: []const u8, _: ?[]const u8) !void {
+            if (std.ascii.eqlIgnoreCase(key, "ignoreall")) {
+                this.ignore_nl = true;
+                this.ignore_ws = true;
+            }
+            if (std.ascii.eqlIgnoreCase(key, "ignorews")) {
+                this.ignore_ws = true;
+            }
+            if (std.ascii.eqlIgnoreCase(key, "ignorenl")) {
+                this.ignore_nl = true;
+            }
         }
     },
 
@@ -282,6 +257,11 @@ pub const Config = struct {
             start: []const u8,
             end: []const u8,
         };
+
+        pub fn deinit(this: *Comment) void {
+            this.block_marker.deinit();
+            this.eol_marker.deinit();
+        }
 
         pub fn configure(this: *Comment, key: []const u8, value: ?[]const u8) !void {
             if (std.ascii.eqlIgnoreCase(key, "marker")) {
@@ -313,51 +293,19 @@ pub const Config = struct {
         };
     }
 
+    pub fn deinit(this: *Config) void {
+        this.comment.deinit();
+    }
+
     fn config_scanner(this: *Config, comptime scanner: std.builtin.Type.StructField, config: []const u8) !void {
         var c = config;
         while (c.len > 0) {
             const eq_ix = if (std.mem.indexOfScalar(u8, c, '=')) |eq| eq else c.len;
             const key = std.mem.trim(u8, c[0..eq_ix], " \t");
-            c = if (eq_ix < c.len) c[eq_ix + 1 ..] else "";
-            const value: ?[]const u8 = if (c.len == 0) null else blk: {
-                var ix: usize = 0;
-                while (ix < c.len and c[ix] != ';') {
-                    var all_whitespace = true;
-                    switch (c[ix]) {
-                        '"' => {
-                            ix += 1;
-                            if (all_whitespace) {
-                                const start_ix = ix;
-                                while (ix < c.len and c[ix] != '"') {
-                                    ix += if (c[ix] == '\\') 2 else 1;
-                                }
-                                const v = if (ix < c.len) c[start_ix..ix] else return error.MalformedLexerConfigString;
-                                ix += 1;
-                                while (ix < c.len and c[ix] != ';') {
-                                    if (c[ix] != ' ' and c[ix] != '\t') {
-                                        return error.MalformedLexerConfigString;
-                                    }
-                                    ix += 1;
-                                }
-                                c = if (ix < c.len - 1) c[ix + 1 ..] else "";
-                                break :blk v;
-                            }
-                            all_whitespace = false;
-                        },
-                        '\\' => {
-                            all_whitespace = false;
-                            ix += 2;
-                        },
-                        ' ', '\t' => ix += 1,
-                        else => {
-                            all_whitespace = false;
-                            ix += 1;
-                        },
-                    }
-                }
-                const v = if (ix < c.len) c[0..ix] else c;
-                c = if (ix < c.len - 1) c[ix + 1 ..] else "";
-                break :blk std.mem.trim(u8, v, " \t");
+            c = c[(if (eq_ix < c.len) eq_ix + 1 else c.len)..];
+            const value = if (c.len == 0) null else blk: {
+                const semi_ix = if (std.mem.indexOfScalar(u8, c, ';')) |semi| semi else c.len;
+                break :blk std.mem.trim(u8, c[0..semi_ix], " \t");
             };
             configure: {
                 inline for (@typeInfo(scanner.type).@"struct".fields) |fld| {
@@ -435,7 +383,7 @@ pub const Lexer = struct {
     }
 
     pub fn deinit(this: *Lexer) void {
-        this.filter.deinit();
+        this.ignore.deinit();
         for (this.unescaped_strings.items) |s| {
             this.allocator.free(s);
         }

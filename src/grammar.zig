@@ -277,8 +277,8 @@ pub const Rule = struct {
     pub fn deinit(this: *Rule) void {
         this.firsts.deinit();
         this.follows.deinit();
-        for (this.rules) |rule| {
-            rule.deinit();
+        for (this.sequences) |seq| {
+            seq.deinit();
         }
         this.rules.deinit();
         this.parse_table.deinit();
@@ -415,11 +415,8 @@ pub const Sequence = struct {
     }
 
     pub fn deinit(this: *Sequence) void {
-        this.entries.deinit();
-        if (this.first != undefined) {
-            this.firsts.deinit();
-        }
-        this.follows.deinit();
+        this.symbols.deinit();
+        this.firsts.deinit();
     }
 
     pub fn format(this: Sequence, comptime _: []const u8, _: std.fmt.FormatOptions, w: anytype) !void {
@@ -525,20 +522,34 @@ pub const Grammar = struct {
     variables: GrammarVariables,
     rules: std.StringArrayHashMap(Rule),
     entry_point: ?[]const u8 = null,
+    parser_config: std.StringHashMap([]const u8),
     strategy: ParsingStrategy = .TopDown,
     build_func: ?[]const u8 = null,
     libs: std.ArrayList([]const u8),
     dryrun: bool = false,
 
-    pub fn init(allocator: Allocator) !Grammar {
+    pub fn init(allocator: Allocator) Grammar {
         return .{
             .allocator = allocator,
             .lexer = lxr.Config.init(allocator),
-            .resolver = Resolver.init(null, null),
+            .resolver = Resolver.init(allocator, null, null),
             .variables = GrammarVariables.init(allocator),
+            .parser_config = std.StringHashMap([]const u8).init(allocator),
             .rules = std.StringArrayHashMap(Rule).init(allocator),
             .libs = std.ArrayList([]const u8).init(allocator),
         };
+    }
+
+    pub fn deinit(this: *Grammar) void {
+        this.lexer.deinit();
+        this.resolver.deinit();
+        this.parser_config.deinit();
+        this.variables.deinit();
+        for (this.rules.items) |*r| {
+            r.deinit();
+        }
+        this.rules.deinit();
+        this.libs.deinit();
     }
 
     pub fn format(this: Grammar, comptime _: []const u8, _: std.fmt.FormatOptions, w: anytype) !void {
@@ -558,6 +569,11 @@ pub const Grammar = struct {
             const scanner = if (std.mem.indexOfScalar(u8, value, ':')) |ix| std.mem.trim(u8, value[0..ix], " \t") else value;
             const scanner_config = if (std.mem.indexOfScalar(u8, value, ':')) |ix| std.mem.trim(u8, value[ix + 1 ..], " \t") else null;
             try this.lexer.configure(scanner, scanner_config);
+        }
+        if (std.ascii.eqlIgnoreCase(name, "parser")) {
+            const config_key = if (std.mem.indexOfScalar(u8, value, ':')) |ix| std.mem.trim(u8, value[0..ix], " \t") else value;
+            const config_value = if (std.mem.indexOfScalar(u8, value, ':')) |ix| std.mem.trim(u8, value[ix + 1 ..], " \t") else "";
+            try this.parser_config.put(config_key, config_value);
         }
     }
 
@@ -628,7 +644,7 @@ test "Build Grammar" {
         \\           ;
         \\
     ;
-    var grammar = try Grammar.init(std.heap.c_allocator);
+    var grammar = Grammar.init(std.heap.c_allocator);
     var r = Rule.init(&grammar, "program");
     var seq = Sequence.init(&grammar);
     try seq.symbols.append(.{ .Action = try GrammarAction.init(grammar.allocator, grammar.resolver, "init", null) });
@@ -680,7 +696,7 @@ pub fn build_test_grammar() !Grammar {
         \\
     ;
 
-    var grammar = try Grammar.init(std.heap.c_allocator);
+    var grammar = Grammar.init(std.heap.c_allocator);
     grammar.lexer.number.signed = false;
     grammar.entry_point = "E";
     _ = try add_rule(&grammar, "E", &[_][]const u8{ "T", "Eopt" });

@@ -3,22 +3,24 @@ const hashset = @import("hashset.zig");
 const lxr = @import("lexer.zig");
 const grm = @import("grammar.zig");
 
-const GrammarParser = struct {
+const Grammar = grm.Grammar;
+
+pub const GrammarParser = struct {
     allocator: std.mem.Allocator,
     lexer: lxr.Lexer,
-    grammar: grm.Grammar,
     keywords: std.StringHashMap(usize),
 
     pub fn init(allocator: std.mem.Allocator, source: []const u8) !GrammarParser {
+        var config = lxr.Config.init(allocator);
+        config.number.signed = false;
         var ret = GrammarParser{
             .allocator = allocator,
-            .lexer = try lxr.Lexer.init(allocator, lxr.Config.init(allocator), source),
-            .grammar = try grm.Grammar.init(allocator),
+            .lexer = try lxr.Lexer.init(allocator, config, source),
             .keywords = std.StringHashMap(usize).init(allocator),
         };
-        try ret.lexer.ignore.add(.Whitespace);
-        try ret.lexer.ignore.add(.Newline);
-        try ret.lexer.ignore.add(.Comment);
+        _ = try ret.lexer.ignore.add(.Whitespace);
+        _ = try ret.lexer.ignore.add(.Newline);
+        _ = try ret.lexer.ignore.add(.Comment);
         return ret;
     }
 
@@ -26,7 +28,7 @@ const GrammarParser = struct {
         this.keywords.deinit();
     }
 
-    fn grammar_config(this: *GrammarParser) !void {
+    fn grammar_config(this: *GrammarParser, grammar: *Grammar) !void {
         try this.lexer.expect_symbol('%');
         while (this.lexer.peek_next()) |t| {
             switch (t.kind) {
@@ -40,7 +42,7 @@ const GrammarParser = struct {
                             .String => std.mem.trim(u8, v.text[1 .. v.text.len - 1], " \t"),
                             else => return error.MalformedConfigSection,
                         };
-                        try this.grammar.configure(name, value);
+                        try grammar.configure(name, value);
                         this.lexer.advance();
                     } else {
                         return error.MalformedConfigSection;
@@ -62,16 +64,18 @@ const GrammarParser = struct {
     fn parse_value(this: *GrammarParser) !grm.Value {
         if (this.lexer.peek_next()) |t| {
             this.lexer.advance();
+            var buf: [1024]u8 = undefined;
             return try grm.Value.decode(this.lexer, switch (t.kind) {
                 .Identifier => t.text,
                 .String => t.text[1 .. t.text.len - 1],
+                .Number => try std.fmt.bufPrint(&buf, "Int:{s}", .{t.text}),
                 else => return error.MalformedActionData,
             });
         }
         return error.MalformedActionData;
     }
 
-    fn parse_actions(this: *GrammarParser, seq: *grm.Sequence) !void {
+    fn parse_actions(this: *GrammarParser, grammar: *Grammar, seq: *grm.Sequence) !void {
         try this.lexer.expect_symbol('[');
         while (this.lexer.peek_next()) |t| {
             switch (t.kind) {
@@ -88,7 +92,7 @@ const GrammarParser = struct {
                     const name = t.text;
                     this.lexer.advance();
                     const data: ?grm.Value = if (this.lexer.accept_symbol(':')) try this.parse_value() else null;
-                    try seq.symbols.append(.{ .Action = try grm.GrammarAction.init(this.allocator, this.grammar.resolver, name, data) });
+                    try seq.symbols.append(.{ .Action = try grm.GrammarAction.init(this.allocator, grammar.resolver, name, data) });
                 },
                 else => return error.MalformedAction,
             }
@@ -96,21 +100,21 @@ const GrammarParser = struct {
         return error.MalformedAction;
     }
 
-    fn parse_non_terminal(this: *GrammarParser) !void {
+    fn parse_non_terminal(this: *GrammarParser, grammar: *Grammar) !void {
         const name = try this.lexer.expect_identifier();
         try this.lexer.expect_symbol(':');
         try this.lexer.expect_symbol('=');
-        var rule = grm.Rule.init(&this.grammar, name.text);
-        var seq = grm.Sequence.init(&this.grammar);
+        var rule = grm.Rule.init(grammar, name.text);
+        var seq = grm.Sequence.init(grammar);
         while (this.lexer.peek_next()) |t| {
             switch (t.kind) {
                 .Symbol => |c| {
                     switch (c) {
-                        '[' => try this.parse_actions(&seq),
+                        '[' => try this.parse_actions(grammar, &seq),
                         ';' => break,
                         '|' => {
                             try rule.sequences.append(seq);
-                            seq = grm.Sequence.init(&this.grammar);
+                            seq = grm.Sequence.init(grammar);
                             this.lexer.advance();
                         },
                         else => {
@@ -148,50 +152,38 @@ const GrammarParser = struct {
                     }
                 },
                 .EOF => break,
-                else => return error.MalformedProduction,
+                else => {
+                    std.debug.print("{}\n", .{t});
+                    return error.MalformedProduction;
+                },
             }
         }
         try rule.sequences.append(seq);
-        try this.grammar.rules.put(rule.non_terminal, rule);
+        try grammar.rules.put(rule.non_terminal, rule);
+        if (grammar.rules.count() == 1) {
+            std.debug.assert(grammar.entry_point == null);
+            grammar.entry_point = rule.non_terminal;
+        }
         this.lexer.advance();
     }
 
-    pub fn parse(this: *GrammarParser) !void {
+    pub fn parse(this: *GrammarParser, grammar: *Grammar) !void {
         while (this.lexer.peek_next()) |t| {
             switch (t.kind) {
                 .Symbol => |c| {
                     switch (c) {
-                        '%' => try this.grammar_config(),
+                        '%' => try this.grammar_config(grammar),
                         else => return error.UnexpectedSymbol,
                     }
                 },
-                .Identifier => try this.parse_non_terminal(),
-                .EOF => return,
+                .Identifier => try this.parse_non_terminal(grammar),
+                .EOF => break,
                 else => return error.UnexpectedToken,
             }
         }
+        _ = try grammar.build_parse_table();
     }
 };
-
-export fn init(target: *anyopaque, data: ?*grm.Value) void {
-    _ = target;
-    std.debug.print("init({})\n", .{data.?});
-}
-
-export fn done(target: *anyopaque, data: ?*grm.Value) void {
-    _ = target;
-    std.debug.print("done({})\n", .{data.?});
-}
-
-export fn stmt_start(target: *anyopaque, data: ?*grm.Value) void {
-    _ = target;
-    std.debug.print("stmt_start({})\n", .{data.?});
-}
-
-export fn stmt_end(target: *anyopaque, data: ?*grm.Value) void {
-    _ = target;
-    std.debug.print("stmt_end({})\n", .{data.?});
-}
 
 test "Grammar Parser" {
     var gp = try GrammarParser.init(std.heap.c_allocator,
@@ -204,8 +196,9 @@ test "Grammar Parser" {
         \\           ;
         \\
     );
-    try gp.parse();
-    std.debug.print("\n{}", .{gp.grammar});
+    var grammar = Grammar.init(std.heap.c_allocator);
+    try gp.parse(&grammar);
+    std.debug.print("\n{}", .{grammar});
 }
 
 test "Firsts" {
@@ -232,10 +225,11 @@ test "Firsts" {
         \\           ;
         \\
     );
-    try gp.parse();
-    try gp.grammar.build_firsts();
+    var grammar = Grammar.init(std.heap.c_allocator);
+    try gp.parse(&grammar);
+    try grammar.build_firsts();
     std.debug.print("\n", .{});
-    for (gp.grammar.rules.values()) |*rule| {
+    for (grammar.rules.values()) |*rule| {
         std.debug.print("Firsts {s}: {}\n", .{ rule.non_terminal, rule.firsts });
     }
 }
@@ -250,11 +244,12 @@ test "Follows" {
         \\F          := 'd' |  '(' E ')' ;
         \\
     );
-    try gp.parse();
-    try gp.grammar.build_firsts();
-    try gp.grammar.build_follows();
+    var grammar = Grammar.init(std.heap.c_allocator);
+    try gp.parse(&grammar);
+    try grammar.build_firsts();
+    try grammar.build_follows();
     std.debug.print("\n", .{});
-    for (gp.grammar.rules.values()) |*rule| {
+    for (grammar.rules.values()) |*rule| {
         std.debug.print("Follows {s}: {}\n", .{ rule.non_terminal, rule.follows });
     }
 }
