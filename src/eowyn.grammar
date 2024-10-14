@@ -3,16 +3,19 @@
   lexer:       "whitespace: ignoreall=1;onnewline=script_parse_mark_line"
   lexer:       keyword
   lexer:       identifier
-  lexer:       "number: signed=0"
+  lexer:       "number: signed=false"
   lexer:       "qstring: quotes=\'\"`/"
   lexer:       "comment: marker=/* */;marker=//;marker=^#"
+  parser:      "init: init"
+  parser:      "deinit: deinit"
+  parser:      "startup: startup"
+  parser:      "cleanup: cleanup"
 %
 
-program                     := [ init ] statements [ done ]
+program                     := statements
                              ;
 
-statements                  :=                   [ statement_start           ]
-                               statement         [ statement_end             ]
+statements                  := statement
                                statements
                              |
                              ;
@@ -260,7 +263,7 @@ reduction                   := '|'               [ deref_function: "reduce"  ]
                                expr
                                reduction_init    [ reduce                    ]
                              ;
-
+ 
 reduction_init              := "<-"
                                expr              [ pushval: 1                ]
                              |                   [ pushval: 0                ]

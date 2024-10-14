@@ -8,7 +8,6 @@ const Grammar = grm.Grammar;
 pub const GrammarParser = struct {
     allocator: std.mem.Allocator,
     lexer: lxr.Lexer,
-    keywords: std.StringHashMap(usize),
 
     pub fn init(allocator: std.mem.Allocator, source: []const u8) !GrammarParser {
         var config = lxr.Config.init(allocator);
@@ -16,7 +15,6 @@ pub const GrammarParser = struct {
         var ret = GrammarParser{
             .allocator = allocator,
             .lexer = try lxr.Lexer.init(allocator, config, source),
-            .keywords = std.StringHashMap(usize).init(allocator),
         };
         _ = try ret.lexer.ignore.add(.Whitespace);
         _ = try ret.lexer.ignore.add(.Newline);
@@ -25,7 +23,7 @@ pub const GrammarParser = struct {
     }
 
     pub fn deinit(this: *GrammarParser) void {
-        this.keywords.deinit();
+        this.lexer.deinit();
     }
 
     fn grammar_config(this: *GrammarParser, grammar: *Grammar) !void {
@@ -140,12 +138,8 @@ pub const GrammarParser = struct {
                         },
                         '"' => {
                             const kw = t.text[1 .. t.text.len - 1];
-                            const code = this.keywords.get(kw) orelse blk: {
-                                const new_code = this.keywords.count();
-                                try this.keywords.put(kw, new_code);
-                                break :blk new_code;
-                            };
-                            try seq.symbols.append(.{ .Terminal = .{ .Keyword = code } });
+                            try grammar.lexer.keywords.add(kw);
+                            try seq.symbols.append(.{ .Terminal = .{ .Keyword = kw } });
                             this.lexer.advance();
                         },
                         else => return error.MalformedProduction,
@@ -153,7 +147,7 @@ pub const GrammarParser = struct {
                 },
                 .EOF => break,
                 else => {
-                    std.debug.print("{}\n", .{t});
+                    std.debug.print("{s}\n", .{t});
                     return error.MalformedProduction;
                 },
             }
@@ -181,7 +175,7 @@ pub const GrammarParser = struct {
                 else => return error.UnexpectedToken,
             }
         }
-        _ = try grammar.build_parse_table();
+        try grammar.build_parse_table();
     }
 };
 

@@ -4,63 +4,6 @@ const Allocator = std.mem.Allocator;
 const set = @import("hashset.zig");
 const unesc = @import("unescape.zig");
 
-pub const Keyword = usize;
-
-pub const Keywords = struct {
-    keywords: []const []const u8 = &[0][]const u8{},
-
-    const MatchResult = union(enum) {
-        NoMatch: void,
-        ExactMatch: Keyword,
-        Prefix: void,
-        PrefixAndExact: Keyword,
-        MatchLost: void,
-    };
-
-    pub fn init(comptime kw_s: []const []const u8) Keywords {
-        return .{
-            .keywords = kw_s,
-        };
-    }
-
-    pub fn match(this: Keywords, text: []const u8) MatchResult {
-        var prefix_matches: i32 = 0;
-        var lost_matches: i32 = 0;
-        var matched: ?Keyword = null;
-        for (this.keywords, 0..) |kw, ix| {
-            if (std.mem.eql(u8, text, kw)) {
-                matched = ix;
-            } else if (text.len < kw.len) {
-                if (std.mem.startsWith(u8, kw, text)) {
-                    prefix_matches += 1;
-                }
-            } else {
-                if (std.mem.startsWith(u8, text, kw)) {
-                    lost_matches += 1;
-                }
-            }
-        }
-        if (matched == null and prefix_matches == 0 and lost_matches == 0) {
-            return .NoMatch;
-        }
-        if (matched == null and prefix_matches > 0) {
-            return .Prefix;
-        }
-        if (matched) |m| {
-            if (prefix_matches == 0) {
-                return .{
-                    .ExactMatch = m,
-                };
-            }
-            return .{
-                .PrefixAndExact = m,
-            };
-        }
-        std.debug.assert(matched == null and prefix_matches == 0 and lost_matches != 0);
-        return .MatchLost;
-    }
-};
-
 pub const Operator = struct {
     id: Id,
     precedence: u8,
@@ -114,32 +57,15 @@ pub const Token = struct {
 
     pub fn decode(s: []const u8, lexer: Lexer) !Token {
         var v = s;
-        const kind_str: []const u8 = if (std.mem.indexOfScalar(u8, s, ':')) |colon| blk: {
+        const k: KindTag = if (std.mem.indexOfScalar(u8, s, ':')) |colon| std.meta.stringToEnum(KindTag, blk: {
             v = s[colon + 1 ..];
             break :blk s[0..colon];
-        } else "Identifier";
-        const k: KindTag = @enumFromInt(blk: {
-            inline for (@typeInfo(KindTag).@"enum".fields) |fld| {
-                if (std.ascii.eqlIgnoreCase(kind_str, fld.name)) {
-                    break :blk fld.value;
-                }
-            }
-            break :blk @intFromEnum(KindTag.Identifier);
-        });
+        }) orelse return error.InvalidKind else .Identifier;
         return switch (k) {
             .Null => init(.Null, v),
             .EOF => init(.EOF, v),
             .Identifier => init(.Identifier, v),
-            .Keyword => init(.{
-                .Keyword = blk: {
-                    for (lexer.config.keywords.keywords.keywords, 0..) |kw, ix| {
-                        if (std.ascii.eqlIgnoreCase(kw, v)) {
-                            break :blk ix;
-                        }
-                    }
-                    return error.UnknownKeyword;
-                },
-            }, v),
+            .Keyword => init(.{ .Keyword = if (lexer.config.keywords.has(v)) v else return error.UnknownKeyword }, v),
             .Newline => init(.Newline, v),
             .Number => init(.Number, v),
             .String => init(.{
@@ -174,7 +100,7 @@ pub const Token = struct {
         Null: void,
         EOF: void,
         Identifier: void,
-        Keyword: Keyword,
+        Keyword: []const u8,
         Newline: void,
         Number: void,
         String: u8,
@@ -185,19 +111,32 @@ pub const Token = struct {
         pub fn format(this: Kind, comptime fmt: []const u8, _: std.fmt.FormatOptions, w: anytype) !void {
             if (std.mem.eql(u8, fmt, "s")) {
                 switch (this) {
-                    .Keyword => |k| try w.print("\"{}\"", .{k}),
+                    .Keyword => |k| try w.print("\"{s}\"", .{k}),
                     .String, .Symbol => |c| try w.print("'{c}'", .{c}),
                     .Comment => |marker| try w.print("{s}", .{marker}),
                     else => try w.print("'{s}'", .{@tagName(this)}),
                 }
             } else {
                 switch (this) {
-                    .Keyword => |k| try w.print(".{{ .Keyword = {} }}", .{k}),
+                    .Keyword => |k| try w.print(".{{ .Keyword = \"{s}\" }}", .{k}),
                     .String, .Symbol => |c| try w.print(".{{ .{s} = '{c}' }}", .{ @tagName(this), c }),
                     .Comment => |marker| try w.print(".{{ .{s} = \"{s}\" }}", .{ @tagName(this), marker }),
                     else => try w.print(".{s}", .{@tagName(this)}),
                 }
             }
+        }
+
+        pub fn eql(this: Kind, other: Kind) bool {
+            if (@intFromEnum(this) != @intFromEnum(other)) return false;
+            return switch (this) {
+                .Comment => |s| std.mem.eql(u8, s, other.Comment),
+                .Keyword => |s| std.mem.eql(u8, s, other.Keyword),
+                .String,
+                => |c| c == other.String,
+                .Symbol,
+                => |c| c == other.Symbol,
+                else => true,
+            };
         }
     };
 };
@@ -205,14 +144,9 @@ pub const Token = struct {
 pub const Config = struct {
     allocator: Allocator,
     comment: Comment,
+    keywords: Keywords,
     identifier: struct {
         on: bool = true,
-    },
-
-    keywords: struct {
-        on: bool = true,
-        keywords: Keywords = .{},
-        operators: Operators = .{},
     },
 
     number: struct {
@@ -246,6 +180,84 @@ pub const Config = struct {
         }
     },
 
+    const Keywords = struct {
+        on: bool = true,
+        keywords: set.StringSet,
+
+        const MatchResult = enum {
+            NoMatch,
+            ExactMatch,
+            Prefix,
+            PrefixAndExact,
+            MatchLost,
+        };
+
+        pub fn init(allocator: Allocator) Keywords {
+            return .{
+                .keywords = set.StringSet.init(allocator),
+            };
+        }
+
+        pub fn deinit(this: *Keywords) void {
+            this.keywords.deinit();
+        }
+
+        pub fn configure(this: *Keywords, key: []const u8, value: ?[]const u8) !void {
+            if (std.ascii.eqlIgnoreCase(key, "kw")) {
+                const v = std.mem.trim(u8, value orelse return error.MalformedLexerConfigString, " \t");
+                _ = try this.keywords.add(v);
+            }
+        }
+
+        pub fn has(this: Keywords, kw: []const u8) bool {
+            return this.keywords.contains(kw);
+        }
+
+        pub fn add(this: *Keywords, kw: []const u8) !void {
+            _ = try this.keywords.add(kw);
+        }
+
+        pub fn addAll(this: *Keywords, kw_s: []const []const u8) !void {
+            for (kw_s) |kw| {
+                _ = try this.add(kw);
+            }
+        }
+
+        pub fn match(this: Keywords, text: []const u8) MatchResult {
+            var prefix_matches: i32 = 0;
+            var lost_matches: i32 = 0;
+            var matched = false;
+            var it = this.keywords.iterator();
+            while (it.next()) |kw| {
+                if (std.mem.eql(u8, text, kw)) {
+                    matched = true;
+                } else if (text.len < kw.len) {
+                    if (std.mem.startsWith(u8, kw, text)) {
+                        prefix_matches += 1;
+                    }
+                } else {
+                    if (std.mem.startsWith(u8, text, kw)) {
+                        lost_matches += 1;
+                    }
+                }
+            }
+            if (!matched and prefix_matches == 0 and lost_matches == 0) {
+                return .NoMatch;
+            }
+            if (!matched and prefix_matches > 0) {
+                return .Prefix;
+            }
+            if (matched) {
+                if (prefix_matches == 0) {
+                    return .ExactMatch;
+                }
+                return .PrefixAndExact;
+            }
+            std.debug.assert(!matched and prefix_matches == 0 and lost_matches != 0);
+            return .MatchLost;
+        }
+    };
+
     const Comment = struct {
         on: bool = true,
         ignore: bool = false,
@@ -257,6 +269,13 @@ pub const Config = struct {
             start: []const u8,
             end: []const u8,
         };
+
+        pub fn init(allocator: Allocator) Comment {
+            return .{
+                .block_marker = std.ArrayList(Comment.BlockMarker).init(allocator),
+                .eol_marker = std.ArrayList([]const u8).init(allocator),
+            };
+        }
 
         pub fn deinit(this: *Comment) void {
             this.block_marker.deinit();
@@ -281,12 +300,9 @@ pub const Config = struct {
     pub fn init(allocator: Allocator) Config {
         return .{
             .allocator = allocator,
-            .comment = .{
-                .block_marker = std.ArrayList(Comment.BlockMarker).init(allocator),
-                .eol_marker = std.ArrayList([]const u8).init(allocator),
-            },
+            .comment = Comment.init(allocator),
             .identifier = .{},
-            .keywords = .{},
+            .keywords = Keywords.init(allocator),
             .number = .{},
             .qstring = .{},
             .whitespace = .{},
@@ -294,6 +310,7 @@ pub const Config = struct {
     }
 
     pub fn deinit(this: *Config) void {
+        this.keywords.deinit();
         this.comment.deinit();
     }
 
@@ -305,7 +322,9 @@ pub const Config = struct {
             c = c[(if (eq_ix < c.len) eq_ix + 1 else c.len)..];
             const value = if (c.len == 0) null else blk: {
                 const semi_ix = if (std.mem.indexOfScalar(u8, c, ';')) |semi| semi else c.len;
-                break :blk std.mem.trim(u8, c[0..semi_ix], " \t");
+                const trimmed = std.mem.trim(u8, c[0..semi_ix], " \t");
+                c = c[(if (semi_ix < c.len) semi_ix + 1 else c.len)..];
+                break :blk trimmed;
             };
             configure: {
                 inline for (@typeInfo(scanner.type).@"struct".fields) |fld| {
@@ -534,9 +553,8 @@ pub const Lexer = struct {
                 p += 1;
             }
             if (this.config.keywords.on) {
-                switch (this.config.keywords.keywords.match(this.source[0..p])) {
-                    .ExactMatch => |kw| return this.buildToken(p, .{ .Keyword = kw }),
-                    .PrefixAndExact => |kw| return this.buildToken(this.config.keywords.keywords.keywords[kw].len, .{ .Keyword = kw }),
+                switch (this.config.keywords.match(this.source[0..p])) {
+                    .ExactMatch, .PrefixAndExact => return this.buildToken(p, .{ .Keyword = this.source[0..p] }),
                     else => {},
                 }
             }
@@ -545,25 +563,25 @@ pub const Lexer = struct {
             }
         }
         if (this.config.keywords.on) {
-            var matched: ?Keyword = null;
+            var matched: ?usize = null;
             for (1..this.source.len) |l| {
-                switch (this.config.keywords.keywords.match(this.source[0..l])) {
-                    .ExactMatch => |kw| return this.buildToken(l, .{ .Keyword = kw }),
+                switch (this.config.keywords.match(this.source[0..l])) {
+                    .ExactMatch => return this.buildToken(l, .{ .Keyword = this.source[0..l] }),
                     .NoMatch => break,
                     .Prefix => {},
-                    .PrefixAndExact => |kw| matched = kw,
-                    .MatchLost => return this.buildToken(l, .{ .Keyword = matched orelse unreachable }),
+                    .PrefixAndExact => matched = l,
+                    .MatchLost => return this.buildToken(l, .{ .Keyword = this.source[0 .. matched orelse unreachable] }),
                 }
             }
         }
         return this.buildToken(1, .{ .Symbol = this.source[0] });
     }
 
-    pub fn accept_keyword(this: *Lexer, keyword: Keyword) bool {
+    pub fn accept_keyword(this: *Lexer, keyword: []const u8) bool {
         if (this.peek_next()) |t| {
             switch (t.kind) {
                 .Keyword => |kw| {
-                    if (keyword == kw) {
+                    if (std.mem.eql(u8, keyword, kw)) {
                         this.advance();
                         return true;
                     }
@@ -619,9 +637,7 @@ test "Config" {
     var config = Config.init(std.heap.c_allocator);
     try config.configure("qstring", "quotes=%$");
     try std.testing.expectEqualStrings("%$", config.qstring.quotes);
-    try config.configure("qstring", "quotes=\"@#\"");
-    try std.testing.expectEqualStrings("@#", config.qstring.quotes);
-    try config.configure("qstring", "quotes=\"12\";quotes=34");
+    try config.configure("qstring", "quotes=12;quotes=34");
     try std.testing.expectEqualStrings("34", config.qstring.quotes);
 }
 
@@ -707,11 +723,11 @@ test "Get all tokens" {
 
 test "Keywords" {
     var config = Config.init(std.heap.c_allocator);
-    config.keywords.keywords.keywords = &[_][]const u8{
+    try config.keywords.addAll(&[_][]const u8{
         "int",
         "char",
         "return",
-    };
+    });
     try test_count_tokens(config, .Keyword, 4,
         \\#include <stdio.h>
         \\

@@ -34,15 +34,8 @@ pub const SymbolCtx = struct {
         return hasher.final();
     }
 
-    pub fn eql(this: @This(), a: Symbol, b: Symbol) bool {
-        _ = this;
-        if (@intFromEnum(a) != @intFromEnum(b)) return false;
-        return switch (a) {
-            .Empty, .End => true,
-            .Action => |ga| ga.eql(b.Action),
-            .Terminal => |k| std.meta.eql(k, b.Terminal),
-            .NonTerminal => |nt| std.mem.eql(u8, nt, b.NonTerminal),
-        };
+    pub fn eql(_: @This(), a: Symbol, b: Symbol) bool {
+        return a.eql(b);
     }
 };
 
@@ -334,39 +327,32 @@ pub const Rule = struct {
         return count;
     }
 
-    pub fn check_LL1(this: Rule, allocator: Allocator) !bool {
-        const has_empty = blk: {
-            for (this.sequences.items) |seq| {
-                if (seq.symbols.items.len == 0) {
-                    break :blk true;
-                }
-            }
-            break :blk false;
-        };
+    pub fn check_LL1(this: Rule, allocator: Allocator) !void {
+        var has_empty = false;
         for (this.sequences.items, 0..) |seq, i| {
             if (try seq.check_LL1(allocator, seq.firsts, this.sequences.items[i + 1 ..], i + 1)) |j| {
                 std.debug.print("LL1 check: first sets {} ({}) and {} ({}) of non-terminal '{s}' are not disjoint\n", .{ i, this.sequences.items[i].firsts, j, this.sequences.items[j].firsts, this.non_terminal });
-                return false;
+                return error.GrammarNotLL1;
             }
             if (this.sequences.items.len > 1) {
-                if (seq.symbols.items.len > 0) {
-                    if (seq.firsts.contains(.Empty)) {
-                        std.debug.print("LL1 check: first set {} of non-terminal '{s}' derives the Empty symbol\n", .{ i, this.non_terminal });
-                        return false;
+                const is_empty = seq.firsts.contains(.Empty);
+                if (is_empty) {
+                    if (has_empty) {
+                        std.debug.print("LL1 check: non-terminal '{s}' has more than one sequence deriving the Empty symbol\n", .{this.non_terminal});
+                        return error.GrammarNotLL1;
                     }
-                } else if (has_empty) {
+                    has_empty = true;
                     var f_i_intersect_followA = Set.init(allocator);
                     defer f_i_intersect_followA.deinit();
                     _ = try f_i_intersect_followA.union_with(seq.firsts);
                     _ = f_i_intersect_followA.intersect(this.follows);
                     if (!f_i_intersect_followA.empty()) {
                         std.debug.print("LL1 check: follow set and first set {} of non-terminal '{s}' are not disjoint\n", .{ i, this.non_terminal });
-                        return false;
+                        return error.GrammarNotLL1;
                     }
                 }
             }
         }
-        return true;
     }
 
     fn add_transition(this: *Rule, symbol: Symbol, ix: usize) !void {
@@ -383,10 +369,7 @@ pub const Rule = struct {
 
     pub fn build_parse_table(this: *Rule) !void {
         for (this.sequences.items, 0..) |seq, ix| {
-            var f_ix = Set.init(this.grammar.allocator);
-            defer f_ix.deinit();
-            _ = try Symbol.firsts(seq.symbols.items, this.grammar, &f_ix);
-            var it = f_ix.iterator();
+            var it = seq.firsts.iterator();
             while (it.next()) |symbol| {
                 try this.add_transition(symbol, ix);
             }
@@ -485,6 +468,16 @@ pub const Symbol = union(enum) {
             .Terminal => |k| try w.print("{s}", .{k}),
             .NonTerminal => |nt| _ = try w.write(nt),
         }
+    }
+
+    pub fn eql(this: Symbol, other: Symbol) bool {
+        if (@intFromEnum(this) != @intFromEnum(other)) return false;
+        return switch (this) {
+            .Empty, .End => true,
+            .Action => |ga| ga.eql(other.Action),
+            .Terminal => |k| k.eql(other.Terminal),
+            .NonTerminal => |nt| std.mem.eql(u8, nt, other.NonTerminal),
+        };
     }
 
     pub fn firsts(entries: []Symbol, grammar: *Grammar, f: *Set) GrammarError!i64 {
@@ -604,26 +597,23 @@ pub const Grammar = struct {
         }
     }
 
-    pub fn analyze(this: *Grammar) !bool {
+    pub fn analyze(this: *Grammar) !void {
         try this.build_firsts();
         try this.build_follows();
-        return this.check_LL1();
+        try this.check_LL1();
     }
 
-    pub fn check_LL1(this: Grammar) !bool {
-        var ok = true;
+    pub fn check_LL1(this: Grammar) !void {
         for (this.rules.values()) |rule| {
-            ok = ok and try rule.check_LL1(this.allocator);
+            try rule.check_LL1(this.allocator);
         }
-        return ok;
     }
 
-    pub fn build_parse_table(this: *Grammar) !bool {
-        if (!try this.analyze()) return false;
+    pub fn build_parse_table(this: *Grammar) !void {
+        try this.analyze();
         for (this.rules.values()) |*rule| {
             try rule.build_parse_table();
         }
-        return true;
     }
 
     pub fn dump_parse_table(this: Grammar) void {

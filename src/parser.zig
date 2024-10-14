@@ -96,7 +96,7 @@ pub const Parser = struct {
                                     done = true;
                                     break :blk;
                                 }
-                                if (!std.meta.eql(t, token.kind)) {
+                                if (!t.eql(token.kind)) {
                                     std.debug.print("Expected '{}', got '{}'\n", .{ t, token.kind });
                                     return error.SyntaxError;
                                 }
