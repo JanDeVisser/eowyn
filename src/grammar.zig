@@ -56,6 +56,7 @@ pub const ValueType = enum {
     Null,
     Bool,
     Int,
+    Float,
     String,
     Token,
 };
@@ -64,6 +65,7 @@ pub const Value = union(ValueType) {
     Null: void,
     Bool: bool,
     Int: i64,
+    Float: f64,
     String: []const u8,
     Token: lxr.Token,
 
@@ -91,7 +93,10 @@ pub const Value = union(ValueType) {
                 .Bool = std.ascii.eqlIgnoreCase("true", v),
             },
             .Int => .{
-                .Int = try std.fmt.parseInt(i64, v, 0),
+                .Int = try std.fmt.parseInt(i64, v, 10),
+            },
+            .Float => .{
+                .Float = try std.fmt.parseFloat(f64, v),
             },
             .String => .{
                 .String = v,
@@ -494,7 +499,10 @@ pub const Symbol = union(enum) {
             .End, .Empty, .Terminal => _ = try firsts_of_entries.add(entries[0]),
             .Action => count += @intCast(try firsts(entries[1..], grammar, f)), // Skip to next entry
             .NonTerminal => |nt_name| {
-                const rule = grammar.rules.getPtr(nt_name) orelse return error.RuleNotFound;
+                const rule = grammar.rules.getPtr(nt_name) orelse {
+                    std.debug.print("Rule '{s}' not found\n", .{nt_name});
+                    return error.RuleNotFound;
+                };
                 count += @intCast(try rule.update_firsts());
                 _ = try firsts_of_entries.union_with(rule.firsts);
             },

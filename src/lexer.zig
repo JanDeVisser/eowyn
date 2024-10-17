@@ -39,20 +39,33 @@ pub const Operators = struct {
     }
 };
 
-pub const Token = struct {
+pub const Location = struct {
     pos: u64 = 0,
     line: u64 = 0,
     col: u64 = 0,
+};
+
+pub const Token = struct {
+    location: Location,
     raw_text: []const u8,
     text: []const u8,
     kind: Kind,
 
+    pub fn bookmark() Token {
+        return init(.Null, "");
+    }
+
     pub fn init(kind: Kind, text: []const u8) Token {
         return .{
+            .location = .{},
             .kind = kind,
             .raw_text = text,
             .text = text,
         };
+    }
+
+    pub fn is_bookmark(this: Token) bool {
+        return this.kind == .Null;
     }
 
     pub fn decode(s: []const u8, lexer: Lexer) !Token {
@@ -67,7 +80,14 @@ pub const Token = struct {
             .Identifier => init(.Identifier, v),
             .Keyword => init(.{ .Keyword = if (lexer.config.keywords.has(v)) v else return error.UnknownKeyword }, v),
             .Newline => init(.Newline, v),
-            .Number => init(.Number, v),
+            .Number => number: {
+                const t: NumberType = if (std.mem.indexOfScalar(u8, v, ':')) |colon| std.meta.stringToEnum(NumberType, number_type: {
+                    const type_str = v[0..colon];
+                    v = s[colon + 1 ..];
+                    break :number_type type_str;
+                }) orelse return error.InvalidNumberType else if (std.mem.indexOfScalar(u8, v, '.')) |_| .Float else .Int;
+                break :number init(.{ .Number = t }, v);
+            },
             .String => init(.{
                 .String = if (v.len > 0) v[0] else '"',
             }, v),
@@ -96,13 +116,20 @@ pub const Token = struct {
         Comment = 9,
     };
 
+    pub const NumberType = enum {
+        Binary,
+        Float,
+        Hex,
+        Int,
+    };
+
     pub const Kind = union(KindTag) {
         Null: void,
         EOF: void,
         Identifier: void,
         Keyword: []const u8,
         Newline: void,
-        Number: void,
+        Number: NumberType,
         String: u8,
         Symbol: u8,
         Whitespace: void,
@@ -113,6 +140,7 @@ pub const Token = struct {
                 switch (this) {
                     .Keyword => |k| try w.print("\"{s}\"", .{k}),
                     .String, .Symbol => |c| try w.print("'{c}'", .{c}),
+                    .Number => |t| try w.print("#{s}", .{@tagName(t)}),
                     .Comment => |marker| try w.print("{s}", .{marker}),
                     else => try w.print("'{s}'", .{@tagName(this)}),
                 }
@@ -120,7 +148,8 @@ pub const Token = struct {
                 switch (this) {
                     .Keyword => |k| try w.print(".{{ .Keyword = \"{s}\" }}", .{k}),
                     .String, .Symbol => |c| try w.print(".{{ .{s} = '{c}' }}", .{ @tagName(this), c }),
-                    .Comment => |marker| try w.print(".{{ .{s} = \"{s}\" }}", .{ @tagName(this), marker }),
+                    .Number => |t| try w.print(".{{ .Number = .{s} }}", .{@tagName(t)}),
+                    .Comment => |marker| try w.print(".{{ .Comment = \"{s}\" }}", .{marker}),
                     else => try w.print(".{s}", .{@tagName(this)}),
                 }
             }
@@ -131,10 +160,9 @@ pub const Token = struct {
             return switch (this) {
                 .Comment => |s| std.mem.eql(u8, s, other.Comment),
                 .Keyword => |s| std.mem.eql(u8, s, other.Keyword),
-                .String,
-                => |c| c == other.String,
-                .Symbol,
-                => |c| c == other.Symbol,
+                .Number => |t| t == other.Number,
+                .String => |c| c == other.String,
+                .Symbol => |c| c == other.Symbol,
                 else => true,
             };
         }
@@ -145,13 +173,9 @@ pub const Config = struct {
     allocator: Allocator,
     comment: Comment,
     keywords: Keywords,
+    number: Number,
     identifier: struct {
         on: bool = true,
-    },
-
-    number: struct {
-        on: bool = true,
-        signed: bool = false,
     },
 
     qstring: struct {
@@ -166,7 +190,7 @@ pub const Config = struct {
 
         const Self = @This();
 
-        fn configure(this: *Self, key: []const u8, _: ?[]const u8) !void {
+        pub fn configure(this: *Self, key: []const u8, _: ?[]const u8) !void {
             if (std.ascii.eqlIgnoreCase(key, "ignoreall")) {
                 this.ignore_nl = true;
                 this.ignore_ws = true;
@@ -295,6 +319,90 @@ pub const Config = struct {
                 }
             }
         }
+
+        fn scan(this: Comment, lexer: *Lexer) ?Token {
+            if (lexer.pos == 0 and this.hashpling and std.mem.startsWith(u8, lexer.source, "#!")) {
+                const len = if (std.mem.indexOfScalar(u8, lexer.source, '\n')) |p| p else lexer.source.len;
+                const ret = lexer.buildToken(len, .{ .Comment = "#!" });
+                lexer.line = 1;
+                lexer.col = 0;
+                return ret;
+            }
+            for (this.eol_marker.items) |marker| {
+                if (std.mem.startsWith(u8, lexer.source, marker)) {
+                    const len = if (std.mem.indexOfScalar(u8, lexer.source, '\n')) |p| p else lexer.source.len;
+                    const ret = lexer.buildToken(len, .{ .Comment = marker });
+                    lexer.line += 1;
+                    lexer.col = 0;
+                    return ret;
+                }
+            }
+            for (this.block_marker.items) |marker| {
+                if (std.mem.startsWith(u8, lexer.source, marker.start)) {
+                    const len = if (std.mem.indexOf(u8, lexer.source, marker.end)) |p| p + marker.end.len else lexer.source.len;
+                    const ret = lexer.buildToken(len, .{ .Comment = marker.start });
+                    const newlines = std.mem.count(u8, lexer.source[0..len], "\n");
+                    if (newlines > 0) {
+                        lexer.line += newlines;
+                        lexer.col = len - std.mem.lastIndexOfScalar(u8, lexer.source[0..len], '\n').?;
+                    }
+                    return ret;
+                }
+            }
+            return null;
+        }
+    };
+
+    const Number = struct {
+        on: bool = true,
+        signed: bool = false,
+        float: bool = false,
+        binary: bool = false,
+        hex: bool = false,
+
+        fn scan(this: Number, lexer: *Lexer) ?Token {
+            var t: Token.NumberType = .Int;
+            var p: usize = 0;
+            if (lexer.source.len > 0 and lexer.source[0] == '+' or lexer.source[0] == '-') {
+                if (!this.signed) {
+                    return null;
+                }
+                p = 1;
+            }
+            var digit_found = false;
+            if (p < lexer.source.len and lexer.source[p] == 0) {
+                p += 1;
+                if (p < lexer.source.len and (lexer.source[p] == 'x' or lexer.source[p] == 'X')) {
+                    if (!this.hex) {
+                        return lexer.buildToken(p, .{ .Number = .Int });
+                    }
+                    p += 1;
+                } else if (p < lexer.source.len and (lexer.source[p] == 'b' or lexer.source[p] == 'B')) {
+                    if (!this.binary) {
+                        return lexer.buildToken(p, .{ .Number = .Int });
+                    }
+                    p += 1;
+                } else {
+                    digit_found = true;
+                }
+            }
+            while (p < lexer.source.len and std.ascii.isDigit(lexer.source[p])) {
+                digit_found = true;
+                p += 1;
+            }
+            if (this.float and p < lexer.source.len and t == .Int and lexer.source[p] == '.') {
+                p += 1;
+                t = .Float;
+                while (p < lexer.source.len and std.ascii.isDigit(lexer.source[p])) {
+                    digit_found = true;
+                    p += 1;
+                }
+            }
+            if (digit_found) {
+                return lexer.buildToken(p, .{ .Number = t });
+            }
+            return null;
+        }
     };
 
     pub fn init(allocator: Allocator) Config {
@@ -316,19 +424,23 @@ pub const Config = struct {
 
     fn config_scanner(this: *Config, comptime scanner: std.builtin.Type.StructField, config: []const u8) !void {
         var c = config;
+        // std.debug.print("Scanner {s}\n", .{scanner.name});
         while (c.len > 0) {
-            const eq_ix = if (std.mem.indexOfScalar(u8, c, '=')) |eq| eq else c.len;
+            const eq_ix = if (std.mem.indexOfAny(u8, c, "=;")) |eq| eq else c.len;
+            const was_eq = if (eq_ix < c.len) c[eq_ix] == '=' else false;
             const key = std.mem.trim(u8, c[0..eq_ix], " \t");
             c = c[(if (eq_ix < c.len) eq_ix + 1 else c.len)..];
-            const value = if (c.len == 0) null else blk: {
+            const value = if (!was_eq) null else blk: {
                 const semi_ix = if (std.mem.indexOfScalar(u8, c, ';')) |semi| semi else c.len;
                 const trimmed = std.mem.trim(u8, c[0..semi_ix], " \t");
                 c = c[(if (semi_ix < c.len) semi_ix + 1 else c.len)..];
                 break :blk trimmed;
             };
             configure: {
+                // std.debug.print("key: {s} value {s}\n", .{ key, if (value) |v| v else "null" });
                 inline for (@typeInfo(scanner.type).@"struct".fields) |fld| {
                     if (std.ascii.eqlIgnoreCase(fld.name, key)) {
+                        // std.debug.print("Godim\n", .{});
                         switch (@typeInfo(fld.type)) {
                             .bool => {
                                 @field(@field(this, scanner.name), fld.name) = if (value) |v| std.ascii.eqlIgnoreCase(v, "true") else true;
@@ -419,46 +531,16 @@ pub const Lexer = struct {
 
     fn buildToken(this: *Lexer, length: u64, kind: Token.Kind) Token {
         this.current = Token{
-            .pos = this.pos,
-            .line = this.line,
-            .col = this.col,
+            .location = .{
+                .pos = this.pos,
+                .line = this.line,
+                .col = this.col,
+            },
             .raw_text = if (this.source.len == 0 or length == 0) "" else this.source[0..length],
             .text = this.unescape(if (this.source.len == 0 or length == 0) "" else this.source[0..length]),
             .kind = kind,
         };
         return this.current.?;
-    }
-
-    fn scan_comment(this: *Lexer) ?Token {
-        if (this.pos == 0 and this.config.comment.hashpling and std.mem.startsWith(u8, this.source, "#!")) {
-            const len = if (std.mem.indexOfScalar(u8, this.source, '\n')) |p| p else this.source.len;
-            const ret = this.buildToken(len, .{ .Comment = "#!" });
-            this.line = 1;
-            this.col = 0;
-            return ret;
-        }
-        for (this.config.comment.eol_marker.items) |marker| {
-            if (std.mem.startsWith(u8, this.source, marker)) {
-                const len = if (std.mem.indexOfScalar(u8, this.source, '\n')) |p| p else this.source.len;
-                const ret = this.buildToken(len, .{ .Comment = marker });
-                this.line += 1;
-                this.col = 0;
-                return ret;
-            }
-        }
-        for (this.config.comment.block_marker.items) |marker| {
-            if (std.mem.startsWith(u8, this.source, marker.start)) {
-                const len = if (std.mem.indexOf(u8, this.source, marker.end)) |p| p + marker.end.len else this.source.len;
-                const ret = this.buildToken(len, .{ .Comment = marker.start });
-                const newlines = std.mem.count(u8, this.source[0..len], "\n");
-                if (newlines > 0) {
-                    this.line += newlines;
-                    this.col = len - std.mem.lastIndexOfScalar(u8, this.source[0..len], '\n').?;
-                }
-                return ret;
-            }
-        }
-        return null;
     }
 
     pub fn advance(this: *Lexer) void {
@@ -482,12 +564,10 @@ pub const Lexer = struct {
             while (true) {
                 if (this.peek()) |t| {
                     if (!this.ignore.contains(t.kind)) {
-                        // std.debug.print("peek_next() {} ", .{t});
                         break :blk t;
                     }
                     this.advance();
                 } else {
-                    // std.debug.print("peek_next() NULL! ", .{});
                     break :blk null;
                 }
             }
@@ -514,7 +594,7 @@ pub const Lexer = struct {
             }
         }
         if (this.config.comment.on) {
-            if (this.scan_comment()) |t| {
+            if (this.config.comment.scan(this)) |t| {
                 return t;
             }
         }
@@ -526,12 +606,8 @@ pub const Lexer = struct {
             return this.buildToken(p, .Whitespace);
         }
         if (this.config.number.on) {
-            if (std.ascii.isDigit(this.source[0]) or (this.config.number.signed and (this.source[0] == '+' or this.source[0] == '-'))) {
-                var p: u64 = 1;
-                while (p < this.source.len and std.ascii.isDigit(this.source[p])) {
-                    p += 1;
-                }
-                return this.buildToken(p, .Number);
+            if (this.config.number.scan(this)) |t| {
+                return t;
             }
         }
         if (this.config.qstring.on) {

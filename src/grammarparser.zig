@@ -12,6 +12,13 @@ pub const GrammarParser = struct {
     pub fn init(allocator: std.mem.Allocator, source: []const u8) !GrammarParser {
         var config = lxr.Config.init(allocator);
         config.number.signed = false;
+        try config.keywords.addAll(&[_][]const u8{
+            "#binary",
+            "#float",
+            "#hex",
+            "#ident",
+            "#int",
+        });
         var ret = GrammarParser{
             .allocator = allocator,
             .lexer = try lxr.Lexer.init(allocator, config, source),
@@ -66,7 +73,7 @@ pub const GrammarParser = struct {
             return try grm.Value.decode(this.lexer, switch (t.kind) {
                 .Identifier => t.text,
                 .String => t.text[1 .. t.text.len - 1],
-                .Number => try std.fmt.bufPrint(&buf, "Int:{s}", .{t.text}),
+                .Number => |number_type| try std.fmt.bufPrint(&buf, "{s}:{s}", .{ @tagName(number_type), t.text }),
                 else => return error.MalformedActionData,
             });
         }
@@ -125,12 +132,26 @@ pub const GrammarParser = struct {
                     try seq.symbols.append(.{ .NonTerminal = t.text });
                     this.lexer.advance();
                 },
+                .Keyword => |kw| {
+                    if (std.mem.eql(u8, kw, "#ident")) {
+                        try seq.symbols.append(.{ .Terminal = .Identifier });
+                    } else if (std.mem.eql(u8, kw, "#int")) {
+                        try seq.symbols.append(.{ .Terminal = .{ .Number = .Int } });
+                    } else if (std.mem.eql(u8, kw, "#hex")) {
+                        try seq.symbols.append(.{ .Terminal = .{ .Number = .Hex } });
+                    } else if (std.mem.eql(u8, kw, "#binary")) {
+                        try seq.symbols.append(.{ .Terminal = .{ .Number = .Binary } });
+                    } else if (std.mem.eql(u8, kw, "#float")) {
+                        try seq.symbols.append(.{ .Terminal = .{ .Number = .Float } });
+                    } else {
+                        std.debug.panic("Unexpected keyword '{s}'", .{kw});
+                    }
+                    this.lexer.advance();
+                },
                 .String => |q| {
                     switch (q) {
                         '\'' => {
                             switch (t.text[1]) {
-                                'i' => try seq.symbols.append(.{ .Terminal = .Identifier }),
-                                'd' => try seq.symbols.append(.{ .Terminal = .Number }),
                                 '"', '\'' => try seq.symbols.append(.{ .Terminal = .{ .String = t.text[1] } }),
                                 else => try seq.symbols.append(.{ .Terminal = .{ .Symbol = t.text[1] } }),
                             }

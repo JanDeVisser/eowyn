@@ -1,32 +1,39 @@
 %
   prefix:      eowyn_
-  lexer:       "whitespace: ignoreall=1;onnewline=script_parse_mark_line"
+  lexer:       "whitespace: ignoreall=true"
   lexer:       keyword
   lexer:       identifier
-  lexer:       "number: signed=false"
+  lexer:       "number: signed=false;float;hex;binary"
   lexer:       "qstring: quotes=\'\"`/"
-  lexer:       "comment: marker=/* */;marker=//;marker=^#"
-  parser:      "init: init"
-  parser:      "deinit: deinit"
-  parser:      "startup: startup"
-  parser:      "cleanup: cleanup"
+  lexer:       "comment: marker=/* */;marker=//"
 %
 
-program                     := statements
+program                     :=                   [ program                   ] 
+                               declarations      [ pop_program               ]
+                             ;
+
+declarations                := declaration
+                               declarations
+                             |
+                             ;
+
+declaration                 := variable_decl
+                             | func_def
                              ;
 
 statements                  := statement
+                               ';'               [ add_statement             ]
                                statements
                              |
                              ;
 
-statement                   := conditional
+statement                   := declaration
+                             | conditional
                              | while_loop
                              | for_loop
                              | break
                              | continue
                              | switch
-                             | func_def
                              | return_stmt
                              | yield_stmt
                              | import_stmt
@@ -34,24 +41,33 @@ statement                   := conditional
                              | context_block
                              | throw
                              | leave
-                             | pass              [ nop                       ]
                              | assignment_or_call
                              | standalone_expr
+                             ;
+
+variable_decl               := var_decl
+                             | const_decl
+                             ;
+
+var_decl                    := "var"
+                               #ident
+                               assignment_or_empty
+                             ;
+
+const_decl                  := "const"
+                               #ident
+                               assignment
                              ;
 
 standalone_expr             := '(' expr ')'
                              ;
 
-pass                        := ';'
-                             | "pass"
-                             ;
-
-conditional                 := "if"              [ if                        ]
-                               expr              [ test                      ]
+conditional                 := "if"
+                               expr
                                statements
                                elif_seq
                                else
-                               "end"             [ end_conditional           ]
+                               "end"
                              ;
 
 elif_seq                    := elif
@@ -59,40 +75,40 @@ elif_seq                    := elif
                              |
                              ;
 
-elif                        := "elif"            [ elif                      ]
-                               expr              [ test                      ]
+elif                        := "elif"
+                               expr
                                statements
                              ;
 
-else                        := "else"            [ else                      ]
+else                        := "else"
                                statements
                              |
                              ;
 
-while_loop                  := "while"           [ start_loop                ]
-                               expr              [ test                      ]
+while_loop                  := "while"
+                               expr
                                statements
-                               "end"             [ end_loop                  ]
+                               "end"
                              ;
 
 for_loop                    := "for"
                                identifier
                                "in"
-                               expr              [ for                       ]
+                               expr
                                statements
-                               "end"             [ end_loop                  ]
+                               "end"
                              ;
 
-break                       := "break"           [ break                     ]
+break                       := "break"
                              ;
 
-continue                    := "continue"        [ continue                  ]
+continue                    := "continue"
                              ;
 
-switch                      := "switch"          [ if                        ]
-                               expr              [ stash: 0 new_counter      ]
-                               cases             [ discard_counter           ]
-                               "end"             [ end_conditional           ]
+switch                      := "switch"
+                               expr
+                               cases
+                               "end"
                              ;
 
 cases                       := cases_seq
@@ -104,9 +120,8 @@ cases_seq                   := case_block
                              |
                              ;
 
-case_block                  :=                  [ case_prolog                ]
-                               case_stmt
-                               case_stmts       [ rollup_cases test          ]
+case_block                  := case_stmt
+                               case_stmts
                                statements
                               ;
 
@@ -115,54 +130,33 @@ case_stmts                  := case_stmt
                              |
                              ;
 
-case_stmt                   := "case"           [ incr                       ]
-                               expr             [ case                       ]
+case_stmt                   := "case"
+                               expr
                                ':'
                              ;
 
-default                     := "default"        [ else                       ]
+default                     := "default"
                                ':'
                                statements
                              ;
 
 func_def                    := func_type
-                               'i'               [ push                      ]
-                               (                 [ bookmark                  ]
+                               #ident               [ push_identifier           ]             
+                               (                 
                                parlist_or_void
-                               )                 [ rollup_list               ]
-                               func_block
+                               )                 [ make_function_decl        ]
+                               func_block        [ make_function             ]
                              ;
 
-func_type                   := "func"            [ pushval: 0                ]
-                             | "threadfunc"      [ pushval: 1                ]
-                             | "generator"       [ pushval: 2                ]
+func_type                   := "func"            
+                             | "threadfunc"
+                             | "generator"
                              ;
 
-func_block                  :=                   [ start_function            ]
-                               baseclasses
+func_block                  := {                 [ make_block                ]
                                statements
-                               "end"             [ end_function              ]
-                             | link_clause       [ native_function           ]
-                             ;
-
-baseclasses                 := :                 [ baseclass_constructors    ]
-                               _baseclasses      [ end_constructors          ]
-                             |
-                             ;
-
-_baseclasses                := baseclass
-                               baseclass_tail
-                             ;
-
-baseclass                   := identifier
-                               (                 [ setup_constructor         ]
-                               arglist_or_void
-                               )                 [ func_call                 ]
-                             ;
-
-baseclass_tail              := ,
-                               _baseclasses
-                             |
+                               }
+                             | link_clause
                              ;
 
 link_clause                 := "->" '"'
@@ -179,7 +173,7 @@ parlist                     := param
                                parlist_tail
                              ;
 
-param                       := 'i'               [ push                      ]
+param                       := #ident               [ make_parameter            ]
                              ;
 
 parlist_tail                := ,
@@ -188,48 +182,46 @@ parlist_tail                := ,
                              ;
 
 lambda                      := "lambda"
-                               (                 [ bookmark                  ]
+                               ( 
                                parlist_or_void
-                               )                 [ rollup_list
-                                                   start_lambda              ]
+                               )
                                statements
-                               "end"             [ end_lambda                ]
+                               "end"
                              ;
 
 return_stmt                 := "return"
-                               expr              [ instruction: "Return"     ]
+                               expr
                              ;
 
 yield_stmt                  := "yield"
-                               expr              [ instruction: "Yield"      ]
+                               expr
                              ;
 
-new                         := "new"            [ setup_function: "new" incr ]
-                               identifier        [ pushval_from_stack        ]
-                               _func_call
+new                         := "new"
+                               identifier
+                               func_call
                              ;
 
-import_stmt                 := "import"      [ setup_function: "import" incr ]
-                               identifier [ pushval_from_stack func_call pop ]
+import_stmt                 := "import"
+                               identifier
                              ;
 
 context_block               := "context"
                                identifier
-                               assignment_or_empty [ begin_context_block     ]
+                               assignment_or_empty
                                statements
-                               "end"               [ end_context_block       ]
+                               "end"
                              ;
 
-assignment_or_empty         :=                   [ dup                       ]
-                                assignment
+assignment_or_empty         := assignment
                              |
                              ;
 
 throw                       := "throw"
-                               expr              [ throw_exception           ]
+                               expr
                              ;
 
-leave                       := "leave"           [ leave                     ]
+leave                       := "leave"
                              ;
 
 assignment_or_call          := identifier
@@ -237,9 +229,7 @@ assignment_or_call          := identifier
                              ;
 
 _assignment_or_call         := assignment
-                             |                   [ instruction: "PushScope"
-                                                   deref                     ]
-                               func_calls        [ pop                       ]
+                             | func_calls
                              ;
 
 func_calls                  := func_call
@@ -252,52 +242,52 @@ _func_calls                 := .
                              ;
 
 assignment                  := =
-                               expr              [ assign                    ]
+                               expr
                              ;
 
 expr                        := predicate
                                predicatetail
                              ;
 
-reduction                   := '|'               [ deref_function: "reduce"  ]
+reduction                   := '|'
                                expr
-                               reduction_init    [ reduce                    ]
+                               reduction_init
                              ;
  
 reduction_init              := "<-"
-                               expr              [ pushval: 1                ]
-                             |                   [ pushval: 0                ]
+                               expr
+                             |     
                              ;
 
-predicatetail               := logic_op          [ infix_op                  ]
-                               predicate         [ call_op                   ]
+predicatetail               := logic_op
+                               predicate
                              | ternary
                              |
                              ;
 
-ternary                     := ?                 [ if test                   ]
+ternary                     := ?
                                expr
-                               :                 [ else                      ]
-                               expr              [ end_conditional           ]
+                               :
+                               expr
                              ;
 
 predicate                   := term
                                termtail
                              ;
 
-termtail                    := add_op            [ infix_op                  ]
-                               term              [ call_op                   ]
+termtail                    := add_op
+                               term
                                termtail
                              | reduction
                              |
                              ;
 
 term                        := factor
-                               factortail        [ qstring_enable_slash      ]
+                               factortail
                              ;
 
-factortail                  := mult_op           [ infix_op                  ]
-                               factor            [ call_op                   ]
+factortail                  := mult_op
+                               factor
                                factortail
                              |
                              ;
@@ -306,17 +296,15 @@ factor                      := expr_atom
                                subscript
                              ;
 
-subscript                   := '[' expr ']'      [ instruction: "Subscript"  ]
+subscript                   := '[' expr ']'
                              |
                              ;
 
-expr_atom                   :=                   [ qstring_disable_slash ] 
-                               _expr_atom
+expr_atom                   := _expr_atom
                              ;  
 
 _expr_atom                  := ( expr )
-                             |                   [ instruction: "PushScope"  ]
-                               var_or_calls
+                             | var_or_calls
                              | new
                              | constant
                              | query
@@ -332,7 +320,7 @@ _var_or_calls               := .
                              |
                              ;
 
-var_or_call                 := identifier        [ deref                     ]
+var_or_call                 := identifier     
                                call_or_empty
                              ;
 
@@ -340,70 +328,67 @@ call_or_empty               := func_call
                              |
                              ;
 
-identifier                  :=                   [ bookmark                  ]
-                               _identifier       [ rollup_name               ]
+identifier                  := #ident               [ push_identifier           ]         
+                               identifier_tail
                              ;
 
-_identifier                 := 'i'               [ push                      ]
-                               _identifier_tail
-                             ;
-
-_identifier_tail            := '.'
-                               _identifier
+identifier_tail             := '.'
+                               identifier
                              |
                              ;
 
-query                       :=                   [ init_query               ]
-                               '`'
-                               query_params      [ query                     ]
+query                       := '`'
+                               query_params
                             ;
 
 query_params                := '%' ( arglist )
                              |
                              ;
 
-constant                    := '"'               [ push_token                ]
-                             | '\''              [ push_token                ]
-                             | '/'               [ push_token                ]
+constant                    := '"'               [ make_qstring              ]
+                             | '\''
+                             | '/'
                              | signed_number
                              | list
                              | dict
-                             | "true"            [ pushconst: "bool:1"       ]
-                             | "false"           [ pushconst: "bool:0"       ]
-                             | "null"            [ pushconst: "ptr:null"     ]
+                             | "true"
+                             | "false"
+                             | "null"
                              ;
 
 signed_number               := sign
-                               number            [ push_signed_val           ]
+                               number
                             ;
 
-sign                        := +                 [ push_tokenstring          ]
-                             | -                 [ push_tokenstring          ]
-                             |                   [ pushval: '+'              ]
+sign                        := +
+                             | -
+                             |
                              ;
 
-number                      := 'd'
-                             | 'f'
-                             | 'x'
+number                      := int_number        [ make_int                  ]
+                             | #float            [ make_float                ]
                              ;
 
-list                        := '['               [ setup_function: "list"    ]
+int_number                  := #int
+                             | #hex
+                             | #binary
+                             ;
+
+list                        := '['
                                entrylist_or_empty
-                               ']'               [ func_call                 ]
+                               ']'
                              ;
 
-entrylist_or_empty          :=                   [ instruction_bookmark      ]
-                               entry
+entrylist_or_empty          := entry
                                comprehension_or_tail
                              |
                              ;
 
-entry                       := expr              [ incr                      ]
+entry                       := expr
                              ;
 
 comprehension_or_tail       := comprehension
-                             |                [ discard_instruction_bookmark ]
-                               entrylist_tail
+                             | entrylist_tail
                              ;
 
 entrylist                   := entry
@@ -417,38 +402,35 @@ entrylist_tail              := ,
 
 comprehension               := "for"
                                identifier
-                               "in"              [ defer_bookmarked_block
-                                                   pushconst: "int:0"        ]
-                               expr              [ for                       ]
-                               where_or_empty    [ comprehension
-                                                   end_loop
-                                                   set_variable: "varargs=bool:1" ]
-                              ;
+                               "in"
+                               expr
+                               where_or_empty
+                             ;
 
 where_or_empty              := where
                              |
                              ;
 
 where                       := "where"
-                               expr              [ where                     ]
+                               expr
                              ;
 
-dict                        := '{'               [ setup_function: "dictionary" ]
+dict                        := '{'
                                attrlist_or_empty
-                               '}'               [ func_call                 ]
+                               '}'
                              ;
 
 attrlist_or_empty           := attrlist
                              |
                              ;
 
-attrlist                    := attrname          [ push                      ]
+attrlist                    := attrname
                                ':'
                                expr
                                attrlist_tail
                              ;
 
-attrname                    := 'i' | '"' | '\'' ;
+attrname                    := #ident | '"' | '\'' ;
 
 attrlist_tail               := ,
                                attrlist
@@ -464,13 +446,9 @@ add_op                      := + | - | ~
 mult_op                     := * | / | ^ | %
                              ;
 
-func_call                   :=                   [ init_function             ]
-                              _func_call
-                             ;
-
-_func_call                  := (
+func_call                  := (
                                arglist_or_void
-                               )                 [ func_call                 ]
+                              )                  [ make_function_call        ]
                              ;
 
 arglist_or_void             := arglist
@@ -481,7 +459,7 @@ arglist                     := argument
                                arglist_tail
                              ;
 
-argument                    := expr              [ incr                      ]
+argument                    := expr
                              ;
 
 arglist_tail                := ,
