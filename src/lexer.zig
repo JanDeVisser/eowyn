@@ -4,41 +4,6 @@ const Allocator = std.mem.Allocator;
 const set = @import("hashset.zig");
 const unesc = @import("unescape.zig");
 
-pub const Operator = struct {
-    id: Id,
-    precedence: u8,
-    associative: enum {
-        Left,
-        Right,
-    } = .Left,
-
-    pub const Id = union(enum) {
-        Keyword: usize,
-        Symbol: u8,
-    };
-};
-
-pub const Operators = struct {
-    operators: []const Operator = &[0]Operator{},
-
-    pub fn init(comptime ops: []const Operator) Operators {
-        return .{
-            .operators = ops,
-        };
-    }
-
-    pub fn from_token(this: Operators, token: Token) ?Operator {
-        for (this.operators) |op| {
-            switch (op.id) {
-                .Keyword => |kw| if (token.payload == .Keyword and token.payload.Keyword == kw) return op,
-                .Symbol => |s| if (token.payload == .Symbol and token.payload.Symbol == s) return op,
-                else => {},
-            }
-        }
-        return null;
-    }
-};
-
 pub const Location = struct {
     pos: u64 = 0,
     line: u64 = 0,

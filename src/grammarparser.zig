@@ -12,6 +12,7 @@ pub const GrammarParser = struct {
     pub fn init(allocator: std.mem.Allocator, source: []const u8) !GrammarParser {
         var config = lxr.Config.init(allocator);
         config.number.signed = false;
+        try config.comment.eol_marker.append("//");
         try config.keywords.addAll(&[_][]const u8{
             "#binary",
             "#float",
@@ -68,6 +69,7 @@ pub const GrammarParser = struct {
 
     fn parse_value(this: *GrammarParser) !grm.Value {
         if (this.lexer.peek_next()) |t| {
+            std.debug.print("parse_value {}\n", .{t});
             this.lexer.advance();
             var buf: [1024]u8 = undefined;
             return try grm.Value.decode(this.lexer, switch (t.kind) {
@@ -96,6 +98,7 @@ pub const GrammarParser = struct {
                 .Identifier => {
                     const name = t.text;
                     this.lexer.advance();
+                    std.debug.print("name {s} next {}\n", .{ name, this.lexer.peek_next().? });
                     const data: ?grm.Value = if (this.lexer.accept_symbol(':')) try this.parse_value() else null;
                     try seq.symbols.append(.{ .Action = try grm.GrammarAction.init(this.allocator, grammar.resolver, name, data) });
                 },

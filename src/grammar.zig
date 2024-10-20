@@ -112,6 +112,7 @@ pub const Value = union(ValueType) {
             .Null => _ = try w.write("null"),
             .Bool => |b| _ = try w.write(if (b) "true" else "false"),
             .Int => |i| try w.print("{}", .{i}),
+            .Float => |f| try w.print("{}", .{f}),
             .String => |s| _ = try w.write(s),
             .Token => |t| try w.print("{s}", .{t}),
         }

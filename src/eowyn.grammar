@@ -173,7 +173,7 @@ parlist                     := param
                                parlist_tail
                              ;
 
-param                       := #ident               [ make_parameter            ]
+param                       := #ident            [ make_parameter            ]
                              ;
 
 parlist_tail                := ,
@@ -259,8 +259,9 @@ reduction_init              := "<-"
                              |     
                              ;
 
-predicatetail               := logic_op
-                               predicate
+// FIXME the precedences of all logic- and bitwise operators are different.
+predicatetail               := logic_op          [ push_current_token        ]
+                               predicate         [ make_binary_expression    ]
                              | ternary
                              |
                              ;
@@ -275,8 +276,8 @@ predicate                   := term
                                termtail
                              ;
 
-termtail                    := add_op
-                               term
+termtail                    := add_op            [ push_current_token        ]
+                               term              [ make_binary_expression    ]
                                termtail
                              | reduction
                              |
@@ -286,8 +287,8 @@ term                        := factor
                                factortail
                              ;
 
-factortail                  := mult_op
-                               factor
+factortail                  := mult_op           [ push_current_token        ]     
+                               factor            [ make_binary_expression    ]
                                factortail
                              |
                              ;
@@ -351,18 +352,18 @@ constant                    := '"'               [ make_qstring              ]
                              | signed_number
                              | list
                              | dict
-                             | "true"
-                             | "false"
+                             | "true"            [ make_bool: "Bool:true"    ]
+                             | "false"           [ make_bool: "Bool:false"   ]
                              | "null"
                              ;
 
-signed_number               := sign
-                               number
+signed_number               := sign              [ push_current_token        ]
+                               number            [ make_unary_expression     ]
+                             | number
                             ;
 
 sign                        := +
                              | -
-                             |
                              ;
 
 number                      := int_number        [ make_int                  ]
