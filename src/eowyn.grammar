@@ -25,7 +25,7 @@ statements                  := statement
                              | statement_block
                              ;
 
-statement_block             := {                 [ start_block               ]
+statement_block             := {                 [ start_block               ]             
                                statement_list
                                }                 [ finish_block              ]
                              ;  
@@ -38,6 +38,7 @@ statement_list              := statement
 statement                   := declaration
                              | conditional
                              | expression
+                             | loop
                              | ';'
                              ;
 
@@ -57,6 +58,10 @@ expression                  := expr
                                ';'
                              ;
 
+label                       := '#'
+                               #ident            [ make_label                ]
+                             ;
+
 conditional                 := "if"              [ start_block               ]
                                ( expr )
                                statements
@@ -68,8 +73,17 @@ else                        := "else"
                              |
                              ;
 
+loop                        := label
+                               loop_
+                             | loop_
+                             ;
+
+loop_                       := "loop"            
+                               statements        [ make_loop               ]
+                             ;
+
 func_def                    := func_type
-                               #ident            [ push_identifier           ]             
+                               #ident            [ make_identifier           ]             
                                (                 
                                parlist_or_void
                                )                 [ make_function_decl        ]
@@ -107,63 +121,175 @@ parlist_tail                := ,
                              |
                              ;
 
-// expr                        := prec_14_head prec_14_operand ;
-// prec_14_head                := prec_14_operand prec_14_op | ;
-// prec_14_op                  := '=' | "+=" | "-=" | "*=" | "/=" | "%=" | "<<=" | ">>=" | "&=" | "^=" | "|=" ;
-// prec_14_operand             := prec_12_operand prec_12_tail ;
-// prec_12_tail                := "||" prec_12_operand | ;
-// prec_12_operand             := prec_11_operand prec_11_tail ;
-// prec_11_tail                := "&&" prec_11_operand | ;
-// prec_11_operand             := prec_10_operand prec_10_tail ;
-// prec_10_tail                := '|' prec_10_operand | ; 
-// prec_10_operand             := prec_9_operand prec_9_tail ;
-// prec_9_tail                 := ^ prec_9_operand | ;
-// prec_9_operand              := prec_8_operand prec_8_tail ;
-// prec_8_tail                 := & prec_8_operand | ;
-// prec_8_operand              := prec_7_operand prec_7_tail ;
-// prec_7_tail                 := prec_7_op prec_7_operand | ;
-// prec_7_op                   := "==" | "!=" ;
-// prec_7_operand              := prec_6_operand prec_6_tail ;
-// prec_6_tail                 := prec_6_op prec_6_operand | ;
-// prec_6_op                   := < | > | "<=" | ">=" ;
-// prec_6_operand              := prec_5_operand prec_5_tail ;
-// prec_5_tail                 := prec_5_op prec_5_operand | ;
-// prec_5_op                   := "<<" | ">>" ;
-// prec_5_operand              := prec_4_operand prec_4_tail ;
-// prec_4_tail                 := prec_4_op prec_4_operand | ;
-// prec_4_op                   := + | - ;
-// prec_4_operand              := prec_3_operand prec_3_tail ;
-// prec_3_tail                 := prec_3_op prec_3_operand | ;
-// prec_3_op                   := * | / | '%' ;
-// prec_3_operand              := unary_op prec_2_operand ;
-// unary_op                    := + | - | ! | ~ | * | & ;
-// prec_2_operand              := prec_1_operand prec_1_tail ;
-// prec_1_tail                 := ( arglist_or_void )
-//                              | '[' arglist ']'
-//                              | . prec_1_operand
-//                              ;
-// prec_1_operand              := atom prec_1_tail ;
+expr                        := prec_14_operand 
+                               prec_14_tail
+                             ;
 
-expr                        := prec_14_operand prec_14_tail ;
-prec_14_tail                := '=' prec_14_operand | ;
-prec_14_operand             := prec_1_operand prec_1_tail ;
-prec_1_tail                 := ( arglist_or_void )
+prec_14_tail                := prec_14_op        [ push_current_token        ]
+                               prec_14_operand   [ make_binary_expression    ]
+                               prec_14_tail
                              |
                              ;
-prec_1_operand              := atom;
 
+prec_14_op                  := '=' | "+=" | "-=" | "*=" | "/=" | "%=" | "<<=" | ">>=" | "&=" | "^=" | "|="
+                             ;
+
+prec_14_operand             := prec_12_operand
+                               prec_12_tail
+                             ;
+
+prec_12_tail                := "||"              [ push_current_token        ]
+                               prec_12_operand   [ make_binary_expression    ]
+                               prec_12_tail
+                             |
+                             ;
+
+prec_12_operand             := prec_11_operand
+                               prec_11_tail
+                             ;
+
+prec_11_tail                := "&&"              [ push_current_token        ]
+                               prec_11_operand   [ make_binary_expression    ]
+                               prec_11_tail
+                             |
+                             ;
+
+prec_11_operand             := prec_10_operand
+                               prec_10_tail
+                             ;
+
+prec_10_tail                := '|'               [ push_current_token        ]
+                               prec_10_operand   [ make_binary_expression    ]
+                               prec_10_tail
+                             |
+                             ;
+
+prec_10_operand             := prec_9_operand 
+                               prec_9_tail 
+                             ;
+
+prec_9_tail                 := ^                 [ push_current_token        ]
+                               prec_9_operand    [ make_binary_expression    ]
+                               prec_9_tail
+                             |
+                             ;
+
+prec_9_operand              := prec_8_operand 
+                               prec_8_tail
+                             ;
+
+prec_8_tail                 := &                 [ push_current_token        ]
+                               prec_8_operand    [ make_binary_expression    ]
+                               prec_8_tail
+                             |
+                             ;
+
+prec_8_operand              := prec_7_operand 
+                               prec_7_tail
+                             ;
+
+prec_7_tail                 := prec_7_op         [ push_current_token        ]
+                               prec_7_operand    [ make_binary_expression    ]
+                               prec_7_tail
+                             |
+                             ;
+
+prec_7_op                   := "==" | "!="
+                             ;
+
+prec_7_operand              := prec_6_operand
+                               prec_6_tail
+                             ;
+
+prec_6_tail                 := prec_6_op         [ push_current_token        ]
+                               prec_6_operand    [ make_binary_expression    ]
+                               prec_6_tail
+                             |
+                             ;
+
+prec_6_op                   := < | > | "<=" | ">="
+                             ;
+
+prec_6_operand              := prec_5_operand
+                               prec_5_tail
+                             ;
+
+prec_5_tail                 := prec_5_op         [ push_current_token        ]
+                               prec_5_operand    [ make_binary_expression    ]
+                               prec_5_tail
+                             | 
+                             ;
+
+prec_5_op                   := "<<" | ">>" 
+                             ;
+
+prec_5_operand              := prec_4_operand
+                               prec_4_tail
+                             ;
+
+prec_4_tail                 := prec_4_op         [ push_current_token        ]
+                               prec_4_operand    [ make_binary_expression    ]
+                               prec_4_tail
+                             | 
+                             ;
+
+prec_4_op                   := + | - 
+                             ;
+
+prec_4_operand              := prec_3_operand 
+                               prec_3_tail
+                             ;
+
+prec_3_tail                 := prec_3_op         [ push_current_token        ]
+                               prec_3_operand    [ make_binary_expression    ]
+                               prec_3_tail
+                             |
+                             ;
+
+prec_3_op                   := * | / | '%' 
+                             ;
+
+prec_3_operand              := unary_op         [ push_current_token         ]
+                               prec_2_operand   [ make_unary_expression      ] 
+                             | prec_2_operand
+                             ;
+
+unary_op                    := + | - | ! | ~ | * | &
+                             ;
+
+prec_2_operand              := prec_1_operand 
+                               prec_1_tail
+                             ;
+
+prec_1_operation            := (                [ start_block                ]
+                               arglist_or_void
+                               )                [ make_function_call         ]
+                             | '['              [ start_block                ]
+                               arglist 
+                               ']'              [ make_subscript             ]
+                             | . prec_1_operand [ make_binary_expression     ]
+                             ;
+
+prec_1_operand              := atom
+                               prec_1_tail
+                             ;
+
+prec_1_tail                 := prec_1_operation
+                               prec_1_tail
+                             | 
+                             ;
 
 atom                        := ( expr )
-                             | #ident
-                             | #int
-                             | #hex
-                             | #binary
-                             | #float
-                             |  '"'               [ make_qstring              ]
-                             | '\''
+                             | #ident            [ make_identifier           ]
+                             | #int              [ make_int                  ]
+                             | #hex              [ make_int                  ]
+                             | #binary           [ make_int                  ]
+                             | #float            [ make_float                ]
+                             |  '"'              [ make_qstring              ]
+                             | '\''              [ make_char                 ]
                              | "true"            [ make_bool: "Bool:true"    ]
                              | "false"           [ make_bool: "Bool:false"   ]
-                             | "null"
+                             | "null"            [ make_null                 ]
                              ;
 
 arglist_or_void             := arglist

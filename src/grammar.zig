@@ -329,11 +329,11 @@ pub const Rule = struct {
             for (seq.symbols.items, 0..) |symbol, ix| {
                 switch (symbol) {
                     .NonTerminal => |nt| {
-                        const old_log = log;
-                        if (std.mem.eql(u8, nt, "parlist_or_void")) {
-                            log = true;
-                        }
-                        defer log = old_log;
+                        // const old_log = log;
+                        // if (std.mem.eql(u8, nt, "parlist_or_void")) {
+                        //     log = true;
+                        // }
+                        // defer log = old_log;
                         const non_terminal: *Rule = this.grammar.rules.getPtr(nt) orelse {
                             std.debug.print("build_follows(): rule for non-terminal '{s}' not found\n", .{nt});
                             return error.RuleNotFound;

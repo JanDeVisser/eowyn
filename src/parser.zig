@@ -53,16 +53,16 @@ pub fn Parser(comptime T: type) type {
             defer this.impl.cleanup();
             while (lexer.next()) |token| {
                 this.last_token = token;
-                std.debug.print("{}\n", .{token});
+                // std.debug.print("{}\n", .{token});
                 var consumed = false;
                 var done = false;
                 while (!done) {
                     blk: {
-                        std.debug.print("  ", .{});
-                        for (this.prod_stack.items) |s| {
-                            std.debug.print("{} ", .{s});
-                        }
-                        std.debug.print("\n", .{});
+                        // std.debug.print("  ", .{});
+                        // for (this.prod_stack.items) |s| {
+                        //     std.debug.print("{} ", .{s});
+                        // }
+                        // std.debug.print("\n", .{});
                         if (this.prod_stack.popOrNull()) |s| {
                             switch (s) {
                                 .NonTerminal => |nt| {

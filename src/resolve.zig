@@ -105,6 +105,7 @@ pub const Resolver = struct {
                 return f;
             }
         }
+        std.debug.print("Could not resolve '{s}'\n", .{name});
         return error.NoSuchFunction;
     }
 };

@@ -216,6 +216,28 @@ const If = struct {
     }
 };
 
+const Label = struct {
+    label: []const u8,
+
+    pub fn format(this: Label, _: *EowynParser, w: anytype) !void {
+        try w.print("#{s}", .{this.label});
+    }
+};
+
+const Loop = struct {
+    label: ?NodeReference = null,
+    statement: NodeReference,
+
+    pub fn format(this: Loop, parser: *EowynParser, w: anytype) !void {
+        if (this.label) |label| {
+            try w.print("{} ", .{parser.get_node(label)});
+        }
+        try w.print("loop {{\n", .{});
+        try w.print("{s}", .{parser.get_node(this.statement)});
+        try w.print("}}", .{});
+    }
+};
+
 const Parameter = struct {
     name: []const u8,
 
@@ -238,20 +260,33 @@ const Program = struct {
     }
 };
 
+const Subscript = struct {
+    subscripts: std.ArrayList(NodeReference),
+
+    pub fn deinit(this: *Subscript) void {
+        this.subscripts.deinit();
+    }
+
+    pub fn format(this: Subscript, parser: *EowynParser, w: anytype) !void {
+        try w.print("[", .{});
+        var first = true;
+        for (this.subscripts.items) |a| {
+            if (!first) {
+                try w.print(", ", .{});
+            }
+            try w.print("{}", .{parser.get_node(a)});
+            first = false;
+        }
+        try w.print("]", .{});
+    }
+};
+
 const UnaryExpression = struct {
     op: UnaryOperator,
     operand: NodeReference,
 
     pub fn format(this: UnaryExpression, parser: *EowynParser, w: anytype) !void {
         try w.print("{}{}", .{ this.op, parser.get_node(this.operand) });
-    }
-};
-
-const VarReference = struct {
-    ident: NodeReference,
-
-    pub fn format(this: VarReference, parser: *EowynParser, w: anytype) !void {
-        try w.print("{}", .{parser.get_node(this.ident)});
     }
 };
 
@@ -266,12 +301,14 @@ const ASTNodeKind = enum {
     Identifier,
     If,
     IntConstant,
+    Label,
+    Loop,
     Parameter,
     Program,
     QString,
     StartBlock,
+    Subscript,
     UnaryExpression,
-    VarReference,
 };
 
 const ASTNodeImpl = union(ASTNodeKind) {
@@ -285,12 +322,14 @@ const ASTNodeImpl = union(ASTNodeKind) {
     Identifier: []const u8,
     If: If,
     IntConstant: u64,
+    Label: Label,
+    Loop: Loop,
     Parameter: Parameter,
     Program: Program,
     QString: []const u8,
     StartBlock: void,
+    Subscript: Subscript,
     UnaryExpression: UnaryExpression,
-    VarReference: VarReference,
 };
 
 pub const NodeReference = usize;
@@ -427,10 +466,10 @@ const ExpressionKind = enum {
     BoolConstant,
     FloatConstant,
     FunctionCall,
+    Identifier,
     IntConstant,
     QString,
     UnaryExpression,
-    VarReference,
 };
 
 const Expression = Node(ExpressionKind);
@@ -576,6 +615,9 @@ const EowynParser = struct {
     }
 
     fn dump_node_stack(this: EowynParser, caption: []const u8) void {
+        if (true) {
+            return;
+        }
         std.debug.print("Stack {s}: ", .{caption});
         var first = true;
         for (this.node_stack.items) |ix| {
@@ -600,7 +642,7 @@ export fn push_bookmark(this: *P) callconv(.C) void {
     this.impl.push_token(Token.bookmark());
 }
 
-export fn push_identifier(this: *P) callconv(.C) void {
+export fn eowyn_make_identifier(this: *P) callconv(.C) void {
     _ = this.impl.push_node(ASTNode{
         .location = this.last_token.location,
         .impl = .{
@@ -705,18 +747,6 @@ export fn eowyn_make_unary_expression(this: *P) callconv(.C) void {
     });
 }
 
-export fn eowyn_make_var_reference(this: *P) callconv(.C) void {
-    const ident = this.impl.pop_typed_node(.Identifier);
-    _ = this.impl.push_node(ASTNode{
-        .location = this.last_token.location,
-        .impl = .{
-            .VarReference = .{
-                .ident = ident.ref,
-            },
-        },
-    });
-}
-
 export fn eowyn_make_parameter(this: *P) callconv(.C) void {
     _ = this.impl.push_node(ASTNode{
         .location = this.last_token.location,
@@ -810,13 +840,40 @@ export fn eowyn_finish_if(this: *P) callconv(.C) void {
     });
 }
 
+export fn eowyn_make_label(this: *P) callconv(.C) void {
+    _ = this.impl.push_node(ASTNode{
+        .location = this.last_token.location,
+        .impl = .{
+            .Label = .{
+                .label = this.last_token.text,
+            },
+        },
+    });
+}
+
+export fn eowyn_make_loop(this: *P) callconv(.C) void {
+    const statement = this.impl.pop_node();
+    const label = this.impl.pop_typed_node_or_null(.Label);
+
+    _ = this.impl.push_node(ASTNode{
+        .location = this.last_token.location,
+        .impl = .{
+            .Loop = .{
+                .label = if (label) |lbl| lbl.ref else null,
+                .statement = statement.ref,
+            },
+        },
+    });
+}
+
 export fn eowyn_make_function_call(this: *P) callconv(.C) void {
     var args = std.ArrayList(NodeReference).init(this.allocator);
-    while (this.impl.peek_kind() != .Identifier) {
+    while (this.impl.peek_kind() != .StartBlock) {
         const expr = this.impl.pop_node_one_of(ExpressionKind);
         args.append(expr.ref) catch std.debug.panic("Out of memory", .{});
     }
     std.mem.reverse(usize, args.items);
+    _ = this.impl.pop_typed_node(.StartBlock);
     const name = this.impl.pop_typed_node(.Identifier);
     _ = this.impl.push_node(.{
         .location = name.location,
@@ -880,11 +937,30 @@ const if_else_test =
     \\
 ;
 
+const loop_test =
+    \\func main() {
+    \\  #blk loop {
+    \\    println("ok");
+    \\  }
+    \\}
+    \\
+;
+
+const tests = &[_][]const u8{
+    expr_test,
+    if_test,
+    if_else_test,
+    loop_test,
+};
+
 pub fn main() !void {
     var gp = try GrammarParser.init(std.heap.c_allocator, eowyn_grammar);
     var grammar = Grammar.init(std.heap.c_allocator);
     try gp.parse(&grammar);
-    grammar.dump();
+    // grammar.dump();
     var p = P.init(std.heap.c_allocator, grammar);
-    try p.parse(if_test);
+
+    for (tests) |t| {
+        try p.parse(t);
+    }
 }
