@@ -1,3 +1,9 @@
+//
+// Copyright (c) 2024, Jan de Visser <jan@finiandarcy.com>
+//
+// SPDX-License-Identifier: MIT
+//
+
 const std = @import("std");
 const hashset = @import("hashset.zig");
 const lxr = @import("lexer.zig");

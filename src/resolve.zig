@@ -1,3 +1,9 @@
+//
+// Copyright (c) 2024, Jan de Visser <jan@finiandarcy.com>
+//
+// SPDX-License-Identifier: MIT
+//
+
 const std = @import("std");
 
 pub extern "c" fn dlopen(path: ?[*:0]const u8, mode: std.c.RTLD) ?*anyopaque;
