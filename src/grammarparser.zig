@@ -69,7 +69,6 @@ pub const GrammarParser = struct {
 
     fn parse_value(this: *GrammarParser) !grm.Value {
         if (this.lexer.peek_next()) |t| {
-            std.debug.print("parse_value {}\n", .{t});
             this.lexer.advance();
             var buf: [1024]u8 = undefined;
             return try grm.Value.decode(this.lexer, switch (t.kind) {
@@ -98,7 +97,6 @@ pub const GrammarParser = struct {
                 .Identifier => {
                     const name = t.text;
                     this.lexer.advance();
-                    std.debug.print("name {s} next {}\n", .{ name, this.lexer.peek_next().? });
                     const data: ?grm.Value = if (this.lexer.accept_symbol(':')) try this.parse_value() else null;
                     try seq.symbols.append(.{ .Action = try grm.GrammarAction.init(this.allocator, grammar.resolver, name, data) });
                 },
@@ -213,6 +211,8 @@ test "Grammar Parser" {
         \\           |
         \\           ;
         \\
+        \\statement  := "var" "x" = #int ';' ;
+        \\
     );
     var grammar = Grammar.init(std.heap.c_allocator);
     try gp.parse(&grammar);
@@ -269,5 +269,48 @@ test "Follows" {
     std.debug.print("\n", .{});
     for (grammar.rules.values()) |*rule| {
         std.debug.print("Follows {s}: {}\n", .{ rule.non_terminal, rule.follows });
+    }
+}
+
+test "IfThenElse" {
+    var gp = try GrammarParser.init(std.heap.c_allocator,
+        \\
+        \\P          := S Sopt ;
+        \\Sopt       := S | ;
+        \\S          := "if" E S Else ;
+        \\Else       := "else" S | ;
+        \\E          := #int | #ident ;
+        \\
+    );
+
+    std.debug.print("\n", .{});
+    var grammar = Grammar.init(std.heap.c_allocator);
+    try gp.parse(&grammar);
+    try grammar.build_parse_table();
+    std.debug.print("\n", .{});
+    for (grammar.rules.values()) |*rule| {
+        // if (std.mem.eql(u8, rule.non_terminal, "Else")) {
+        std.debug.print("--> {s} <--\n", .{rule.non_terminal});
+        std.debug.print("Follows: {}\n", .{rule.follows});
+        std.debug.print("Firsts: {}\n", .{rule.firsts});
+        std.debug.print("Parse table:\n", .{});
+        rule.dump_parse_table();
+        // }
+    }
+}
+
+test "Eowyn" {
+    var eowyn = try GrammarParser.init(std.heap.c_allocator, @embedFile("eowyn.grammar"));
+    var grammar = Grammar.init(std.heap.c_allocator);
+    try eowyn.parse(&grammar);
+    try grammar.build_parse_table();
+    std.debug.print("\n", .{});
+    for (grammar.rules.values()) |*rule| {
+        if (std.mem.eql(u8, rule.non_terminal, "else")) {
+            std.debug.print("Follows: {}\n", .{rule.follows});
+            std.debug.print("Firsts: {}\n", .{rule.firsts});
+            std.debug.print("Parse table:\n", .{});
+            rule.dump_parse_table();
+        }
     }
 }

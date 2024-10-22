@@ -43,7 +43,9 @@ pub fn Parser(comptime T: type) type {
 
         pub fn parse(this: *P, source: []const u8) !void {
             this.prod_stack.clearRetainingCapacity();
-            std.debug.print("\n", .{});
+            // std.debug.print("\n", .{});
+            // this.grammar.dump_parse_table();
+            // std.debug.print("\n", .{});
             try this.prod_stack.append(.{ .NonTerminal = this.grammar.entry_point orelse @panic("No entry point") });
             var lexer = try Lexer.init(this.allocator, this.grammar.lexer, source);
             defer lexer.deinit();

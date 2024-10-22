@@ -6,6 +6,8 @@ const resolve = @import("resolve.zig");
 
 pub const Allocator = std.mem.Allocator;
 
+var log = false;
+
 pub fn DeepHashCtx(comptime T: type) type {
     return struct {
         pub fn hash(this: @This(), key: T) u64 {
@@ -315,20 +317,53 @@ pub const Rule = struct {
         return count;
     }
 
-    pub fn add_to_follows(this: *Rule, f: Set) !usize {
-        // std.debug.print("\"{s}\".add_follows({})\n", .{ this.non_terminal, f });
-        return try this.follows.union_with(f);
-    }
-
     pub fn update_follows(this: *Rule) !usize {
+        if (follows_tx.contains(this.non_terminal)) {
+            return 0;
+        }
         var count: usize = 0;
-        if (!follows_tx.contains(this.non_terminal)) {
-            // std.debug.print("\"{s}\".update_follows {}\n", .{ this.non_terminal, this.follows });
-            _ = try follows_tx.add(this.non_terminal);
-            for (this.sequences.items) |*seq| {
-                count += try seq.build_follows(this.follows);
+        // std.debug.print("\"{s}\".update_follows\n", .{this.non_terminal});
+        _ = try follows_tx.add(this.non_terminal);
+        defer _ = follows_tx.remove(this.non_terminal);
+        for (this.sequences.items) |*seq| {
+            for (seq.symbols.items, 0..) |symbol, ix| {
+                switch (symbol) {
+                    .NonTerminal => |nt| {
+                        const old_log = log;
+                        if (std.mem.eql(u8, nt, "parlist_or_void")) {
+                            log = true;
+                        }
+                        defer log = old_log;
+                        const non_terminal: *Rule = this.grammar.rules.getPtr(nt) orelse {
+                            std.debug.print("build_follows(): rule for non-terminal '{s}' not found\n", .{nt});
+                            return error.RuleNotFound;
+                        };
+                        if (log) {
+                            std.debug.print("{s}.update_follows: updating \"{s}\"\n", .{ this.non_terminal, nt });
+                        }
+                        var f = Set.init(this.grammar.allocator);
+                        defer f.deinit();
+                        _ = try Symbol.firsts(seq.symbols.items[ix + 1 ..], this.grammar, &f);
+                        if (log) {
+                            std.debug.print("Successor firsts set: {}\n", .{f});
+                        }
+
+                        // defer so we can remove ε
+                        if (f.contains(.Empty)) {
+                            if (log) {
+                                std.debug.print("First set for successor derives ε\n", .{});
+                            }
+                            count += try non_terminal.follows.union_with(this.follows);
+                            _ = f.remove(.Empty);
+                        }
+                        count += non_terminal.follows.union_with(f) catch @panic("Out of memory");
+                        if (log) {
+                            std.debug.print("\"{s}\".follows is now {}\n", .{ nt, non_terminal.follows });
+                        }
+                    },
+                    else => {},
+                }
             }
-            _ = follows_tx.remove(this.non_terminal);
         }
         return count;
     }
@@ -369,7 +404,11 @@ pub const Rule = struct {
                     try this.add_transition(follow, ix);
                 }
             },
-            else => try this.parse_table.put(symbol, ix),
+            else => {
+                if (!this.parse_table.contains(symbol)) {
+                    try this.parse_table.put(symbol, ix);
+                }
+            },
         }
     }
 
@@ -420,28 +459,6 @@ pub const Sequence = struct {
 
     pub fn build_firsts(this: *Sequence) !i64 {
         return try Symbol.firsts(this.symbols.items, this.grammar, &this.firsts);
-    }
-
-    pub fn build_follows(this: *Sequence, rule_follows: Set) !usize {
-        var count: usize = 0;
-        for (this.symbols.items, 0..) |symbol, ix| {
-            switch (symbol) {
-                .NonTerminal => |nt| {
-                    const non_terminal = this.grammar.rules.getPtr(nt) orelse return error.RuleNotFound;
-                    // std.debug.print("\"{s}\".build_follows({})\n", .{ nt, rule_follows });
-                    var f = Set.init(this.grammar.allocator);
-                    defer f.deinit();
-                    _ = try Symbol.firsts(this.symbols.items[ix + 1 ..], this.grammar, &f);
-                    if (f.contains(.Empty)) {
-                        count += try non_terminal.add_to_follows(rule_follows);
-                        _ = f.remove(.Empty);
-                    }
-                    count += try non_terminal.add_to_follows(f);
-                },
-                else => {},
-            }
-        }
-        return count;
     }
 
     pub fn check_LL1(this: Sequence, allocator: Allocator, f_i: Set, tail: []Sequence, j: usize) !?usize {
@@ -630,6 +647,17 @@ pub const Grammar = struct {
             rule.dump_parse_table();
         }
     }
+
+    pub fn dump(this: Grammar) void {
+        for (this.rules.values()) |r| {
+            std.debug.print("\n{}\n", .{r});
+            std.debug.print("Firsts: {}\n", .{r.firsts});
+            std.debug.print("Follows: {}\n", .{r.follows});
+            std.debug.print("Parse table:\n", .{});
+            r.dump_parse_table();
+        }
+        std.debug.print("\n", .{});
+    }
 };
 
 test "Build Grammar" {
@@ -709,7 +737,7 @@ pub fn build_test_grammar() !Grammar {
     try add_sequence(rule, &[_]Symbol{ .{ .Terminal = .{ .Symbol = '/' } }, .{ .NonTerminal = "F" }, .{ .NonTerminal = "Topt" } });
     try add_sequence(rule, &[_]Symbol{});
     rule = try add_rule(&grammar, "F", &[_][]const u8{});
-    try add_sequence(rule, &[_]Symbol{.{ .Terminal = .Number }});
+    try add_sequence(rule, &[_]Symbol{.{ .Terminal = .{ .Number = .Int } }});
     try add_sequence(rule, &[_]Symbol{ .{ .Terminal = .{ .Symbol = '(' } }, .{ .NonTerminal = "E" }, .{ .Terminal = .{ .Symbol = ')' } } });
     _ = try grammar.build_parse_table();
     return grammar;

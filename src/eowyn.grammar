@@ -21,28 +21,24 @@ declaration                 := variable_decl
                              | func_def
                              ;
 
-statements                  := statement
-                               ';'               [ add_statement             ]
-                               statements
+statements                  := statement     
+                             | statement_block
+                             ;
+
+statement_block             := {                 [ start_block               ]
+                               statement_list
+                               }                 [ finish_block              ]
+                             ;  
+
+statement_list              := statement        
+                               statement_list
                              |
                              ;
 
 statement                   := declaration
                              | conditional
-                             | while_loop
-                             | for_loop
-                             | break
-                             | continue
-                             | switch
-                             | return_stmt
-                             | yield_stmt
-                             | import_stmt
-                             | new
-                             | context_block
-                             | throw
-                             | leave
-                             | assignment_or_call
-                             | standalone_expr
+                             | expression
+                             | ';'
                              ;
 
 variable_decl               := var_decl
@@ -50,34 +46,21 @@ variable_decl               := var_decl
                              ;
 
 var_decl                    := "var"
-                               #ident
-                               assignment_or_empty
+                               expr
                              ;
 
 const_decl                  := "const"
-                               #ident
-                               assignment
-                             ;
-
-standalone_expr             := '(' expr ')'
-                             ;
-
-conditional                 := "if"
                                expr
-                               statements
-                               elif_seq
-                               else
-                               "end"
                              ;
 
-elif_seq                    := elif
-                               elif_seq
-                             |
+expression                  := expr
+                               ';'
                              ;
 
-elif                        := "elif"
-                               expr
+conditional                 := "if"              [ start_block               ]
+                               ( expr )
                                statements
+                               else              [ finish_if                 ]
                              ;
 
 else                        := "else"
@@ -85,63 +68,8 @@ else                        := "else"
                              |
                              ;
 
-while_loop                  := "while"
-                               expr
-                               statements
-                               "end"
-                             ;
-
-for_loop                    := "for"
-                               identifier
-                               "in"
-                               expr
-                               statements
-                               "end"
-                             ;
-
-break                       := "break"
-                             ;
-
-continue                    := "continue"
-                             ;
-
-switch                      := "switch"
-                               expr
-                               cases
-                               "end"
-                             ;
-
-cases                       := cases_seq
-                               default
-                             ;
-
-cases_seq                   := case_block
-                               cases_seq
-                             |
-                             ;
-
-case_block                  := case_stmt
-                               case_stmts
-                               statements
-                              ;
-
-case_stmts                  := case_stmt
-                               case_stmts
-                             |
-                             ;
-
-case_stmt                   := "case"
-                               expr
-                               ':'
-                             ;
-
-default                     := "default"
-                               ':'
-                               statements
-                             ;
-
 func_def                    := func_type
-                               #ident               [ push_identifier           ]             
+                               #ident            [ push_identifier           ]             
                                (                 
                                parlist_or_void
                                )                 [ make_function_decl        ]
@@ -153,9 +81,7 @@ func_type                   := "func"
                              | "generator"
                              ;
 
-func_block                  := {                 [ make_block                ]
-                               statements
-                               }
+func_block                  := statements
                              | link_clause
                              ;
 
@@ -181,286 +107,71 @@ parlist_tail                := ,
                              |
                              ;
 
-lambda                      := "lambda"
-                               ( 
-                               parlist_or_void
-                               )
-                               statements
-                               "end"
-                             ;
+// expr                        := prec_14_head prec_14_operand ;
+// prec_14_head                := prec_14_operand prec_14_op | ;
+// prec_14_op                  := '=' | "+=" | "-=" | "*=" | "/=" | "%=" | "<<=" | ">>=" | "&=" | "^=" | "|=" ;
+// prec_14_operand             := prec_12_operand prec_12_tail ;
+// prec_12_tail                := "||" prec_12_operand | ;
+// prec_12_operand             := prec_11_operand prec_11_tail ;
+// prec_11_tail                := "&&" prec_11_operand | ;
+// prec_11_operand             := prec_10_operand prec_10_tail ;
+// prec_10_tail                := '|' prec_10_operand | ; 
+// prec_10_operand             := prec_9_operand prec_9_tail ;
+// prec_9_tail                 := ^ prec_9_operand | ;
+// prec_9_operand              := prec_8_operand prec_8_tail ;
+// prec_8_tail                 := & prec_8_operand | ;
+// prec_8_operand              := prec_7_operand prec_7_tail ;
+// prec_7_tail                 := prec_7_op prec_7_operand | ;
+// prec_7_op                   := "==" | "!=" ;
+// prec_7_operand              := prec_6_operand prec_6_tail ;
+// prec_6_tail                 := prec_6_op prec_6_operand | ;
+// prec_6_op                   := < | > | "<=" | ">=" ;
+// prec_6_operand              := prec_5_operand prec_5_tail ;
+// prec_5_tail                 := prec_5_op prec_5_operand | ;
+// prec_5_op                   := "<<" | ">>" ;
+// prec_5_operand              := prec_4_operand prec_4_tail ;
+// prec_4_tail                 := prec_4_op prec_4_operand | ;
+// prec_4_op                   := + | - ;
+// prec_4_operand              := prec_3_operand prec_3_tail ;
+// prec_3_tail                 := prec_3_op prec_3_operand | ;
+// prec_3_op                   := * | / | '%' ;
+// prec_3_operand              := unary_op prec_2_operand ;
+// unary_op                    := + | - | ! | ~ | * | & ;
+// prec_2_operand              := prec_1_operand prec_1_tail ;
+// prec_1_tail                 := ( arglist_or_void )
+//                              | '[' arglist ']'
+//                              | . prec_1_operand
+//                              ;
+// prec_1_operand              := atom prec_1_tail ;
 
-return_stmt                 := "return"
-                               expr
-                             ;
-
-yield_stmt                  := "yield"
-                               expr
-                             ;
-
-new                         := "new"
-                               identifier
-                               func_call
-                             ;
-
-import_stmt                 := "import"
-                               identifier
-                             ;
-
-context_block               := "context"
-                               identifier
-                               assignment_or_empty
-                               statements
-                               "end"
-                             ;
-
-assignment_or_empty         := assignment
+expr                        := prec_14_operand prec_14_tail ;
+prec_14_tail                := '=' prec_14_operand | ;
+prec_14_operand             := prec_1_operand prec_1_tail ;
+prec_1_tail                 := ( arglist_or_void )
                              |
                              ;
+prec_1_operand              := atom;
 
-throw                       := "throw"
-                               expr
-                             ;
 
-leave                       := "leave"
-                             ;
-
-assignment_or_call          := identifier
-                               _assignment_or_call
-                             ;
-
-_assignment_or_call         := assignment
-                             | func_calls
-                             ;
-
-func_calls                  := func_call
-                               _func_calls
-                             ;
-
-_func_calls                 := .
-                               var_or_calls
-                             |
-                             ;
-
-assignment                  := =
-                               expr
-                             ;
-
-expr                        := predicate
-                               predicatetail
-                             ;
-
-reduction                   := '|'
-                               expr
-                               reduction_init
-                             ;
- 
-reduction_init              := "<-"
-                               expr
-                             |     
-                             ;
-
-// FIXME the precedences of all logic- and bitwise operators are different.
-predicatetail               := logic_op          [ push_current_token        ]
-                               predicate         [ make_binary_expression    ]
-                             | ternary
-                             |
-                             ;
-
-ternary                     := ?
-                               expr
-                               :
-                               expr
-                             ;
-
-predicate                   := term
-                               termtail
-                             ;
-
-termtail                    := add_op            [ push_current_token        ]
-                               term              [ make_binary_expression    ]
-                               termtail
-                             | reduction
-                             |
-                             ;
-
-term                        := factor
-                               factortail
-                             ;
-
-factortail                  := mult_op           [ push_current_token        ]     
-                               factor            [ make_binary_expression    ]
-                               factortail
-                             |
-                             ;
-
-factor                      := expr_atom
-                               subscript
-                             ;
-
-subscript                   := '[' expr ']'
-                             |
-                             ;
-
-expr_atom                   := _expr_atom
-                             ;  
-
-_expr_atom                  := ( expr )
-                             | var_or_calls
-                             | new
-                             | constant
-                             | query
-                             | lambda
-                             ;
-
-var_or_calls                := var_or_call
-                               _var_or_calls
-                             ;
-
-_var_or_calls               := .
-                               var_or_calls
-                             |
-                             ;
-
-var_or_call                 := identifier     
-                               call_or_empty
-                             ;
-
-call_or_empty               := func_call
-                             |
-                             ;
-
-identifier                  := #ident               [ push_identifier           ]         
-                               identifier_tail
-                             ;
-
-identifier_tail             := '.'
-                               identifier
-                             |
-                             ;
-
-query                       := '`'
-                               query_params
-                            ;
-
-query_params                := '%' ( arglist )
-                             |
-                             ;
-
-constant                    := '"'               [ make_qstring              ]
+atom                        := ( expr )
+                             | #ident
+                             | #int
+                             | #hex
+                             | #binary
+                             | #float
+                             |  '"'               [ make_qstring              ]
                              | '\''
-                             | '/'
-                             | signed_number
-                             | list
-                             | dict
                              | "true"            [ make_bool: "Bool:true"    ]
                              | "false"           [ make_bool: "Bool:false"   ]
                              | "null"
-                             ;
-
-signed_number               := sign              [ push_current_token        ]
-                               number            [ make_unary_expression     ]
-                             | number
-                            ;
-
-sign                        := +
-                             | -
-                             ;
-
-number                      := int_number        [ make_int                  ]
-                             | #float            [ make_float                ]
-                             ;
-
-int_number                  := #int
-                             | #hex
-                             | #binary
-                             ;
-
-list                        := '['
-                               entrylist_or_empty
-                               ']'
-                             ;
-
-entrylist_or_empty          := entry
-                               comprehension_or_tail
-                             |
-                             ;
-
-entry                       := expr
-                             ;
-
-comprehension_or_tail       := comprehension
-                             | entrylist_tail
-                             ;
-
-entrylist                   := entry
-                               entrylist_tail
-                             ;
-
-entrylist_tail              := ,
-                               entrylist
-                             |
-                             ;
-
-comprehension               := "for"
-                               identifier
-                               "in"
-                               expr
-                               where_or_empty
-                             ;
-
-where_or_empty              := where
-                             |
-                             ;
-
-where                       := "where"
-                               expr
-                             ;
-
-dict                        := '{'
-                               attrlist_or_empty
-                               '}'
-                             ;
-
-attrlist_or_empty           := attrlist
-                             |
-                             ;
-
-attrlist                    := attrname
-                               ':'
-                               expr
-                               attrlist_tail
-                             ;
-
-attrname                    := #ident | '"' | '\'' ;
-
-attrlist_tail               := ,
-                               attrlist
-                             |
-                             ;
-
-logic_op                    := > | ">=" | < | "<=" | "==" | "!=" | "||" | "&&" | "and" | "or"
-                             ;
-
-add_op                      := + | - | ~
-                             ;
-
-mult_op                     := * | / | ^ | %
-                             ;
-
-func_call                  := (
-                               arglist_or_void
-                              )                  [ make_function_call        ]
                              ;
 
 arglist_or_void             := arglist
                              |
                              ;
 
-arglist                     := argument
+arglist                     := expr
                                arglist_tail
-                             ;
-
-argument                    := expr
                              ;
 
 arglist_tail                := ,
