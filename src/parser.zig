@@ -27,6 +27,7 @@ pub fn Parser(comptime T: type) type {
         grammar: Grammar,
         prod_stack: std.ArrayList(Symbol),
         last_token: Token,
+        log: bool = false,
         impl: T,
 
         const P = @This();
@@ -49,9 +50,14 @@ pub fn Parser(comptime T: type) type {
 
         pub fn parse(this: *P, source: []const u8) !void {
             this.prod_stack.clearRetainingCapacity();
-            // std.debug.print("\n", .{});
-            // this.grammar.dump_parse_table();
-            // std.debug.print("\n", .{});
+            if (std.meta.fieldIndex(T, "log") != null) {
+                this.impl.log = this.log;
+            }
+            if (this.log) {
+                std.debug.print("\n", .{});
+                this.grammar.dump_parse_table();
+                std.debug.print("\n", .{});
+            }
             try this.prod_stack.append(.{ .NonTerminal = this.grammar.entry_point orelse @panic("No entry point") });
             var lexer = try Lexer.init(this.allocator, this.grammar.lexer, source);
             defer lexer.deinit();
@@ -59,16 +65,20 @@ pub fn Parser(comptime T: type) type {
             defer this.impl.cleanup();
             while (lexer.next()) |token| {
                 this.last_token = token;
-                // std.debug.print("{}\n", .{token});
+                if (this.log) {
+                    std.debug.print("{}\n", .{token});
+                }
                 var consumed = false;
                 var done = false;
                 while (!done) {
                     blk: {
-                        // std.debug.print("  ", .{});
-                        // for (this.prod_stack.items) |s| {
-                        //     std.debug.print("{} ", .{s});
-                        // }
-                        // std.debug.print("\n", .{});
+                        if (this.log) {
+                            std.debug.print("  ", .{});
+                            for (this.prod_stack.items) |s| {
+                                std.debug.print("{} ", .{s});
+                            }
+                            std.debug.print("\n", .{});
+                        }
                         if (this.prod_stack.popOrNull()) |s| {
                             switch (s) {
                                 .NonTerminal => |nt| {
@@ -104,6 +114,9 @@ pub fn Parser(comptime T: type) type {
                                     consumed = true;
                                 },
                                 .Action => |*action| {
+                                    if (this.log) {
+                                        std.debug.print("Executing action {s}\n", .{action.full_name});
+                                    }
                                     try action.call(this);
                                 },
                                 else => {},
