@@ -3,6 +3,7 @@ zig-out/
 .DS_Store
 .idea/
 .vscode/
+.zed/
 build/
 cmake-build-debug/
 
