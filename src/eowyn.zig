@@ -21,9 +21,12 @@ const Token = lxr.Token;
 pub const eowyn_grammar: []const u8 = @embedFile("eowyn.grammar");
 
 pub const ASTNodeKind = enum {
+    ArrayType,
+    AssignmentExpression,
     BinaryExpression,
     Block,
     BoolConstant,
+    BuiltinType,
     FloatConstant,
     Function,
     FunctionCall,
@@ -34,6 +37,7 @@ pub const ASTNodeKind = enum {
     Label,
     Loop,
     Parameter,
+    PointerType,
     Program,
     QString,
     StartBlock,
@@ -42,9 +46,12 @@ pub const ASTNodeKind = enum {
 };
 
 pub const ASTNodeImpl = union(ASTNodeKind) {
+    ArrayType: ast.ArrayType,
+    AssignmentExpression: ast.AssignmentExpression,
     BinaryExpression: ast.BinaryExpression,
     Block: ast.Block,
     BoolConstant: bool,
+    BuiltinType: ast.BuiltinType,
     FloatConstant: f64,
     Function: ast.Function,
     FunctionCall: ast.FunctionCall,
@@ -55,6 +62,7 @@ pub const ASTNodeImpl = union(ASTNodeKind) {
     Label: ast.Label,
     Loop: ast.Loop,
     Parameter: ast.Parameter,
+    PointerType: ast.PointerType,
     Program: ast.Program,
     QString: []const u8,
     StartBlock: void,
@@ -65,6 +73,7 @@ pub const ASTNodeImpl = union(ASTNodeKind) {
 pub const ASTNode = node.Node(ASTNodeKind);
 
 pub const ExpressionKind = enum {
+    AssignmentExpression,
     BinaryExpression,
     BoolConstant,
     FloatConstant,
@@ -76,6 +85,14 @@ pub const ExpressionKind = enum {
 };
 
 pub const Expression = ast.Node(ExpressionKind);
+
+pub const TypeKind = enum {
+    ArrayType,
+    BuiltinType,
+    PointerType,
+};
+
+pub const TypeSpec = ast.Node(ExpressionKind);
 
 pub const EowynParser = struct {
     allocator: Allocator,
@@ -329,6 +346,57 @@ export fn eowyn_make_binary_expression(this: *P) callconv(.C) void {
     });
 }
 
+export fn eowyn_make_assignment_expression(this: *P) callconv(.C) void {
+    const op_token = this.impl.pop_token();
+    const operator = op: {
+        switch (op_token.kind) {
+            .Symbol => |s| {
+                if (s == '=') {
+                    break :op op.BinaryOperator.Assign;
+                }
+                std.debug.panic("Operator '{s}' is not an assignment operator", .{op_token.text});
+            },
+            .Keyword => |kw| {
+                const map = map: {
+                    if (std.mem.endsWith(u8, kw, "=")) {
+                        if (kw.len == 2) {
+                            break :map op.BinaryOperatorMap.get(.{ .Symbol = kw[0] }) orelse std.debug.panic("Operator '{s}' is not an assignment operator", .{op_token.text});
+                        }
+                        break :map op.BinaryOperatorMap.get(.{ .Keyword = kw[0 .. kw.len - 1] }) orelse std.debug.panic("Operator '{s}' is not an assignment operator", .{op_token.text});
+                    }
+                    std.debug.panic("Operator '{s}' is not an assignment operator", .{op_token.text});
+                };
+                if (!map.assignment) {
+                    std.debug.panic("Operator '{s}' is not an assignment operator", .{op_token.text});
+                }
+                break :op map.op;
+            },
+            else => std.debug.panic("Unknown operator '{s}'", .{op_token.text}),
+        }
+    };
+    const right = this.impl.pop_node().ref;
+    const left = this.impl.pop_node();
+    switch (left.impl) {
+        .Identifier => {},
+        .UnaryExpression => |u| {
+            if (u.op != .Deref) {
+                std.debug.panic("Expected lvalue, got '{}'", .{left});
+            }
+        },
+        else => std.debug.panic("Expected lvalue, got '{}'", .{left}),
+    }
+    _ = this.impl.push_node(ASTNode{
+        .location = this.last_token.location,
+        .impl = .{
+            .AssignmentExpression = .{
+                .left = left.ref,
+                .op = operator,
+                .right = right,
+            },
+        },
+    });
+}
+
 export fn eowyn_make_unary_expression(this: *P) callconv(.C) void {
     const op_token = this.impl.pop_token();
     const operator = blk: {
@@ -351,18 +419,56 @@ export fn eowyn_make_unary_expression(this: *P) callconv(.C) void {
     });
 }
 
+export fn eowyn_make_type(this: *P) callconv(.C) void {
+    const t = ast.BuiltinType.get(this.last_token.text) orelse std.debug.panic("Unknown type '{s}'", .{this.last_token.text});
+    _ = this.impl.push_node(ASTNode{
+        .location = this.last_token.location,
+        .impl = .{
+            .BuiltinType = t,
+        },
+    });
+}
+
+export fn eowyn_make_array_type(this: *P) callconv(.C) void {
+    const element_type = this.impl.pop_node_one_of(TypeKind).ref;
+    _ = this.impl.push_node(ASTNode{
+        .location = this.last_token.location,
+        .impl = .{
+            .ArrayType = .{
+                .element_type = element_type,
+            },
+        },
+    });
+}
+
+export fn eowyn_make_pointer_type(this: *P) callconv(.C) void {
+    const element_type = this.impl.pop_node_one_of(TypeKind).ref;
+    _ = this.impl.push_node(ASTNode{
+        .location = this.last_token.location,
+        .impl = .{
+            .PointerType = .{
+                .element_type = element_type,
+            },
+        },
+    });
+}
+
 export fn eowyn_make_parameter(this: *P) callconv(.C) void {
+    const param_type = this.impl.pop_node_one_of(TypeKind).ref;
+    const ident = this.impl.pop_typed_node(.Identifier);
     _ = this.impl.push_node(ASTNode{
         .location = this.last_token.location,
         .impl = .{
             .Parameter = .{
-                .name = this.last_token.text,
+                .name = ident.impl.Identifier,
+                .type = param_type,
             },
         },
     });
 }
 
 export fn eowyn_make_function_decl(this: *P) callconv(.C) void {
+    const return_type = this.impl.pop_node_one_of(TypeKind).ref;
     var params = std.ArrayList(NodeReference).init(this.allocator);
     while (this.impl.pop_typed_node_or_null(.Parameter)) |param| {
         params.append(param.ref) catch @panic("Out of memory");
@@ -375,6 +481,7 @@ export fn eowyn_make_function_decl(this: *P) callconv(.C) void {
             .FunctionDecl = .{
                 .name = name.impl.Identifier,
                 .parameters = params,
+                .return_type = return_type,
             },
         },
     });

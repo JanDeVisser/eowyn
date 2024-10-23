@@ -14,7 +14,7 @@
   lexer:       "comment: marker=/* */;marker=//"
 %
 
-program                     :=                   [ program                   ] 
+program                     :=                   [ program                   ]
                                declarations      [ pop_program               ]
                              ;
 
@@ -27,16 +27,16 @@ declaration                 := variable_decl
                              | func_def
                              ;
 
-statements                  := statement     
+statements                  := statement
                              | statement_block
                              ;
 
-statement_block             := {                 [ start_block               ]             
+statement_block             := {                 [ start_block               ]
                                statement_list
                                }                 [ finish_block              ]
-                             ;  
+                             ;
 
-statement_list              := statement        
+statement_list              := statement
                                statement_list
                              |
                              ;
@@ -84,19 +84,20 @@ loop                        := label
                              | loop_
                              ;
 
-loop_                       := "loop"            
+loop_                       := "loop"
                                statements        [ make_loop               ]
                              ;
 
 func_def                    := func_type
-                               #ident            [ make_identifier           ]             
-                               (                 
+                               #ident            [ make_identifier           ]
+                               (
                                parlist_or_void
-                               )                 [ make_function_decl        ]
+                               )
+                               typespec          [ make_function_decl        ]
                                func_block        [ make_function             ]
                              ;
 
-func_type                   := "func"            
+func_type                   := "func"
                              | "threadfunc"
                              | "generator"
                              ;
@@ -119,7 +120,9 @@ parlist                     := param
                                parlist_tail
                              ;
 
-param                       := #ident            [ make_parameter            ]
+param                       := #ident            [ make_identifier           ]
+                               ':'
+                               typespec          [ make_parameter            ]
                              ;
 
 parlist_tail                := ,
@@ -127,13 +130,25 @@ parlist_tail                := ,
                              |
                              ;
 
-expr                        := prec_14_operand 
-                               prec_14_tail
+typespec                    := type              [ make_type                 ]
+                             | '[' ']' typespec  [ make_array_type           ]
+                             | * typespec        [ make_pointer_type         ]
                              ;
 
-prec_14_tail                := prec_14_op        [ push_current_token        ]
-                               prec_14_operand   [ make_binary_expression    ]
-                               prec_14_tail
+
+type                        := "int"
+                             | "float"
+                             | "string"
+                             | "bool"
+                             | "void"
+                             ;
+
+expr                        := prec_14_operand
+                               prec_14_rhs
+                             ;
+
+prec_14_rhs                 := prec_14_op        [ push_current_token        ]
+                               expr              [ make_assignment_expression]
                              |
                              ;
 
@@ -170,8 +185,8 @@ prec_10_tail                := '|'               [ push_current_token        ]
                              |
                              ;
 
-prec_10_operand             := prec_9_operand 
-                               prec_9_tail 
+prec_10_operand             := prec_9_operand
+                               prec_9_tail
                              ;
 
 prec_9_tail                 := ^                 [ push_current_token        ]
@@ -180,7 +195,7 @@ prec_9_tail                 := ^                 [ push_current_token        ]
                              |
                              ;
 
-prec_9_operand              := prec_8_operand 
+prec_9_operand              := prec_8_operand
                                prec_8_tail
                              ;
 
@@ -190,7 +205,7 @@ prec_8_tail                 := &                 [ push_current_token        ]
                              |
                              ;
 
-prec_8_operand              := prec_7_operand 
+prec_8_operand              := prec_7_operand
                                prec_7_tail
                              ;
 
@@ -223,10 +238,10 @@ prec_6_operand              := prec_5_operand
 prec_5_tail                 := prec_5_op         [ push_current_token        ]
                                prec_5_operand    [ make_binary_expression    ]
                                prec_5_tail
-                             | 
+                             |
                              ;
 
-prec_5_op                   := "<<" | ">>" 
+prec_5_op                   := "<<" | ">>"
                              ;
 
 prec_5_operand              := prec_4_operand
@@ -236,13 +251,13 @@ prec_5_operand              := prec_4_operand
 prec_4_tail                 := prec_4_op         [ push_current_token        ]
                                prec_4_operand    [ make_binary_expression    ]
                                prec_4_tail
-                             | 
+                             |
                              ;
 
-prec_4_op                   := + | - 
+prec_4_op                   := + | -
                              ;
 
-prec_4_operand              := prec_3_operand 
+prec_4_operand              := prec_3_operand
                                prec_3_tail
                              ;
 
@@ -252,18 +267,18 @@ prec_3_tail                 := prec_3_op         [ push_current_token        ]
                              |
                              ;
 
-prec_3_op                   := * | / | '%' 
+prec_3_op                   := * | / | '%'
                              ;
 
 prec_3_operand              := unary_op         [ push_current_token         ]
-                               prec_2_operand   [ make_unary_expression      ] 
+                               prec_2_operand   [ make_unary_expression      ]
                              | prec_2_operand
                              ;
 
 unary_op                    := + | - | ! | ~ | * | &
                              ;
 
-prec_2_operand              := prec_1_operand 
+prec_2_operand              := prec_1_operand
                                prec_1_tail
                              ;
 
@@ -271,7 +286,7 @@ prec_1_operation            := (                [ start_block                ]
                                arglist_or_void
                                )                [ make_function_call         ]
                              | '['              [ start_block                ]
-                               arglist 
+                               arglist
                                ']'              [ make_subscript             ]
                              | . prec_1_operand [ make_binary_expression     ]
                              ;
@@ -282,7 +297,7 @@ prec_1_operand              := atom
 
 prec_1_tail                 := prec_1_operation
                                prec_1_tail
-                             | 
+                             |
                              ;
 
 atom                        := ( expr )
