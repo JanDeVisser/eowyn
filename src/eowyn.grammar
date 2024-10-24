@@ -45,6 +45,7 @@ statement                   := declaration
                              | conditional
                              | expression
                              | loop
+                             | return
                              | ';'
                              ;
 
@@ -52,12 +53,20 @@ variable_decl               := var_decl
                              | const_decl
                              ;
 
-var_decl                    := "var"
+var_decl                    := "var"             [ start_block               ]
+                               #ident            [ make_identifier           ]
+                               var_assignment    [ make_var_decl             ]
+                             ;
+
+var_assignment              := '='
                                expr
+                             |
                              ;
 
 const_decl                  := "const"
-                               expr
+                               #ident            [ make_identifier           ]
+                               '='
+                               expr              [ make_const_decl           ]
                              ;
 
 expression                  := expr
@@ -85,7 +94,16 @@ loop                        := label
                              ;
 
 loop_                       := "loop"
-                               statements        [ make_loop               ]
+                               statements        [ make_loop                 ]
+                             ;
+
+return                      := "return"
+                               return_value
+                             ;
+
+return_value                := expr              [ make_return_with_value    ]
+                               ';'
+                             |                   [ make_void_return          ]
                              ;
 
 func_def                    := func_type
@@ -93,8 +111,12 @@ func_def                    := func_type
                                (
                                parlist_or_void
                                )
-                               typespec          [ make_function_decl        ]
+                               return_type
                                func_block        [ make_function             ]
+                             ;
+
+return_type                 := typespec          [ make_function_decl        ]
+                             |                   [ make_void_function_decl   ]
                              ;
 
 func_type                   := "func"
@@ -130,18 +152,11 @@ parlist_tail                := ,
                              |
                              ;
 
-typespec                    := type              [ make_type                 ]
+typespec                    := #ident            [ make_type                 ]
                              | '[' ']' typespec  [ make_array_type           ]
                              | * typespec        [ make_pointer_type         ]
                              ;
 
-
-type                        := "int"
-                             | "float"
-                             | "string"
-                             | "bool"
-                             | "void"
-                             ;
 
 expr                        := prec_14_operand
                                prec_14_rhs

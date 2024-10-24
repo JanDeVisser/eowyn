@@ -127,6 +127,8 @@ pub const Value = union(ValueType) {
     }
 };
 
+pub const ParserError = std.mem.Allocator.Error || error{SyntaxError};
+
 pub const GrammarAction = struct {
     allocator: Allocator,
     resolver: Resolver,
@@ -668,7 +670,7 @@ pub const Grammar = struct {
 
 test "Build Grammar" {
     _ =
-        \\ 
+        \\
         \\program    := [ init ] statements [ done ]
         \\           ;
         \\

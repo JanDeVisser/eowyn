@@ -22,7 +22,7 @@ const Symbol = grm.Symbol;
 const GrammarParser = grmparser.GrammarParser;
 
 const expr_test =
-    \\func main() void {
+    \\func main() {
     \\  println("Hello, World!");
     \\  println(42);
     \\  println(3.14);
@@ -33,7 +33,7 @@ const expr_test =
 ;
 
 const if_test =
-    \\func main() void {
+    \\func main() {
     \\  if (foo(x)) {
     \\    println("ok");
     \\  }
@@ -42,7 +42,7 @@ const if_test =
 ;
 
 const if_else_test =
-    \\func main() void {
+    \\func main() {
     \\  if (foo(32)) {
     \\    println("ok");
     \\  } else {
@@ -53,7 +53,7 @@ const if_else_test =
 ;
 
 const loop_test =
-    \\func main() void {
+    \\func main() {
     \\  #blk loop {
     \\    println("ok");
     \\  }
@@ -62,22 +62,32 @@ const loop_test =
 ;
 
 const func_test =
-    \\func foo(x: int) void {
+    \\func foo(x: int) int {
     \\  println(x);
+    \\  return x + 1;
     \\}
     \\
 ;
 
 const assign_test =
-    \\func foo(x: int) void {
+    \\func foo(x: int) {
     \\  bar = 34 + 39;
     \\}
     \\
 ;
 
 const assign_assign_test =
-    \\func foo(x: int) void {
+    \\func foo(x: int) {
     \\  bar = quux = 34 + 39;
+    \\}
+    \\
+;
+
+const var_decl_test =
+    \\func foo(x: int) {
+    \\  var foo;
+    \\  var bar = 34 + 39;
+    \\  const quux = 34 + 39;
     \\}
     \\
 ;
@@ -90,6 +100,7 @@ const tests = &[_][]const u8{
     func_test,
     assign_test,
     assign_assign_test,
+    var_decl_test,
 };
 
 pub fn main() !void {
