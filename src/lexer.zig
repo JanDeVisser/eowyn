@@ -304,12 +304,20 @@ pub fn LexerTypes(comptime Keywords: type) type {
 
                 scanners: std.meta.Tuple(Scanners),
 
-                pub fn init() Self {
+                pub fn init(allocator: std.mem.Allocator) Self {
                     var ret: Self = undefined;
                     inline for (Scanners, 0..) |Scanner, ix| {
-                        ret.scanners[ix] = Scanner.init();
+                        ret.scanners[ix] = Scanner.init(allocator);
                     }
                     return ret;
+                }
+
+                pub fn deinit(this: Self) void {
+                    inline for (Scanners, 0..) |Scanner, ix| {
+                        if (std.meta.hasFn(Scanner, "deinit")) {
+                            @call(.auto, @field(Scanner, "deinit"), .{this.scanners[ix]});
+                        }
+                    }
                 }
 
                 pub fn scan(this: *const Self, buffer: []const u8) ?ScanResult {
@@ -332,7 +340,7 @@ pub fn LexerTypes(comptime Keywords: type) type {
             return struct {
                 const Self = @This();
 
-                pub fn init() Self {
+                pub fn init(_: std.mem.Allocator) Self {
                     return .{};
                 }
 
@@ -367,19 +375,30 @@ pub fn LexerTypes(comptime Keywords: type) type {
 
         pub fn BlockComments(comptime BeginMarker: []const u8, comptime EndMarker: []const u8, comptime ignore: bool) type {
             return struct {
+
+                // The scanner's state needs to be external from the actual
+                // scanner because the comptime magic wants a const when calling
+                // methods on scanners. The deinit takes a value instead of a
+                // reference for similar reasons.
                 const State = struct {
                     in_comment: bool,
                 };
                 const Self = @This();
 
+                allocator: std.mem.Allocator,
                 state: *State,
 
-                pub fn init() Self {
-                    const state = std.heap.c_allocator.create(State) catch std.builtin.panic("OOM!", null, null);
+                pub fn init(allocator: std.mem.Allocator) Self {
+                    const state = allocator.create(State) catch std.builtin.panic("OOM!", null, null);
                     state.in_comment = false;
                     return .{
+                        .allocator = allocator,
                         .state = state,
                     };
+                }
+
+                pub fn deinit(this: Self) void {
+                    this.allocator.destroy(this.state);
                 }
 
                 pub fn scan(this: *const Self, buffer: []const u8) ?ScanResult {
@@ -446,7 +465,7 @@ pub fn LexerTypes(comptime Keywords: type) type {
             return struct {
                 const Self = @This();
 
-                pub fn init() Self {
+                pub fn init(_: std.mem.Allocator) Self {
                     return .{};
                 }
 
@@ -493,7 +512,7 @@ pub fn LexerTypes(comptime Keywords: type) type {
                 }
             };
 
-            pub fn init() NumberScanner {
+            pub fn init(_: std.mem.Allocator) NumberScanner {
                 return .{};
             }
 
@@ -551,7 +570,7 @@ pub fn LexerTypes(comptime Keywords: type) type {
         pub fn QuotedStringScanner(comptime Quotes: []const u8) type {
             return struct {
                 const Self = @This();
-                pub fn init() Self {
+                pub fn init(_: std.mem.Allocator) Self {
                     return .{};
                 }
 
@@ -577,7 +596,7 @@ pub fn LexerTypes(comptime Keywords: type) type {
             return struct {
                 const Self = @This();
 
-                pub fn init() Self {
+                pub fn init(_: std.mem.Allocator) Self {
                     return .{};
                 }
 
@@ -616,7 +635,7 @@ pub fn LexerTypes(comptime Keywords: type) type {
         }
 
         pub const IdentifierScanner = struct {
-            pub fn init() IdentifierScanner {
+            pub fn init(_: std.mem.Allocator) IdentifierScanner {
                 return .{};
             }
 
@@ -639,7 +658,7 @@ pub fn LexerTypes(comptime Keywords: type) type {
         };
 
         pub const KeywordScanner = struct {
-            pub fn init() KeywordScanner {
+            pub fn init(_: std.mem.Allocator) KeywordScanner {
                 return .{};
             }
 
@@ -662,7 +681,7 @@ pub fn LexerTypes(comptime Keywords: type) type {
         };
 
         pub const SymbolMuncher = struct {
-            pub fn init() SymbolMuncher {
+            pub fn init(_: std.mem.Allocator) SymbolMuncher {
                 return .{};
             }
 
@@ -715,9 +734,13 @@ pub fn Lexer(comptime Types: type, Scanner: type) type {
             pub fn init(lexer: *Self, src: []const u8) Source {
                 return .{
                     .lexer = lexer,
-                    .scanner = Scanner.init(),
+                    .scanner = Scanner.init(lexer.allocator),
                     .buffer = src,
                 };
+            }
+
+            pub fn deinit(this: *Source) void {
+                this.scanner.deinit();
             }
 
             pub fn push_back(this: *Source, token: *const Token) void {
@@ -789,6 +812,13 @@ pub fn Lexer(comptime Types: type, Scanner: type) type {
             };
         }
 
+        pub fn deinit(this: *Self) void {
+            for (this.sources.items) |*s| {
+                s.deinit();
+            }
+            this.sources.deinit();
+        }
+
         pub fn push_source(this: *Self, src: []const u8) void {
             this.sources.append(Source.init(this, src)) catch std.builtin.panic("OOM", null, null);
         }
@@ -815,7 +845,8 @@ pub fn Lexer(comptime Types: type, Scanner: type) type {
                 switch (res.result) {
                     .Token => |token| blk: {
                         if (token.matches(TokenKind.EndOfFile)) {
-                            _ = this.sources.pop();
+                            var s = this.sources.pop();
+                            s.deinit();
                             if (!this.exhausted()) {
                                 break :blk;
                             }
@@ -933,12 +964,12 @@ test "Initialize stuff" {
     const lexer_types = LexerTypes(NoKeywords);
 
     _ = lexer_types.ScanResult.buffer("Hello");
-    _ = lexer_types.CScannerPack.init();
+    _ = lexer_types.CScannerPack.init(std.heap.c_allocator);
 }
 
 test "Line Comment Scanner" {
     const lexer_types = LexerTypes(NoKeywords);
-    var scanner = lexer_types.LineComments("//", false).init();
+    var scanner = lexer_types.LineComments("//", false).init(std.heap.c_allocator);
     const res = scanner.scan(
         \\// Well hello there
         \\foo bar
@@ -960,7 +991,7 @@ test "Line Comment Scanner" {
 
 test "Block Comment Scanner" {
     const lexer_types = LexerTypes(NoKeywords);
-    var scanner = lexer_types.BlockComments("/*", "*/", false).init();
+    var scanner = lexer_types.BlockComments("/*", "*/", false).init(std.heap.c_allocator);
     const res = scanner.scan(
         \\/* Well hello there */ more stuff
         \\foo bar
@@ -982,7 +1013,7 @@ test "Block Comment Scanner" {
 
 test "Raw Scanner" {
     const lexer_types = LexerTypes(NoKeywords);
-    var scanner = lexer_types.RawScanner("@begin", "@end").init();
+    var scanner = lexer_types.RawScanner("@begin", "@end").init(std.heap.c_allocator);
     const res = scanner.scan(
         \\@begin
         \\   There is stuff here
@@ -1020,7 +1051,7 @@ test "Raw Scanner" {
 
 test "Number Scanner" {
     const lexer_types = LexerTypes(NoKeywords);
-    var scanner = lexer_types.NumberScanner.init();
+    var scanner = lexer_types.NumberScanner.init(std.heap.c_allocator);
     var ix: usize = 0;
     const numbers = "4 3.14 0xBABECAFE 0b0110";
     const lengths = .{ 1, 4, 10, 6 };
@@ -1045,7 +1076,7 @@ test "Number Scanner" {
 
 test "Quoted String Scanner" {
     const lexer_types = LexerTypes(NoKeywords);
-    var scanner = lexer_types.QuotedStringScanner("'\"`").init();
+    var scanner = lexer_types.QuotedStringScanner("'\"`").init(std.heap.c_allocator);
     var ix: usize = 0;
     const strings =
         \\"Hello" 'Hello' `Hello`
@@ -1073,7 +1104,7 @@ test "Quoted String Scanner" {
 
 test "Whitespace Scanner" {
     const lexer_types = LexerTypes(NoKeywords);
-    var scanner = lexer_types.WhitespaceScanner(false).init();
+    var scanner = lexer_types.WhitespaceScanner(false).init(std.heap.c_allocator);
     var ix: usize = 0;
     const ws = "    x\nx\tx";
     const kinds = .{ TokenKind.Whitespace, TokenKind.EndOfLine, TokenKind.Tab };
@@ -1093,7 +1124,7 @@ test "Whitespace Scanner" {
 
 test "Identifier Scanner" {
     const lexer_types = LexerTypes(NoKeywords);
-    var scanner = lexer_types.IdentifierScanner.init();
+    var scanner = lexer_types.IdentifierScanner.init(std.heap.c_allocator);
     var ix: usize = 0;
     const idents = "ident ide_t ide9t iden9 _dent";
     inline for (0..5) |_| {
@@ -1124,7 +1155,7 @@ const TestKeywords = enum {
 
 test "Keyword Scanner" {
     const lexer_types = LexerTypes(TestKeywords);
-    var scanner = lexer_types.KeywordScanner.init();
+    var scanner = lexer_types.KeywordScanner.init(std.heap.c_allocator);
     var ix: usize = 0;
     const kws = "if while else";
     const kw_codes = .{ TestKeywords.If, TestKeywords.While, TestKeywords.Else };
@@ -1158,6 +1189,7 @@ test "Initialize lexer" {
     const lexer_types = LexerTypes(TestKeywords);
     var lexer = Lexer(lexer_types, lexer_types.CScannerPack).init(std.heap.c_allocator);
     lexer.push_source(test_string);
+    lexer.deinit();
 }
 
 test "Lex stuff" {
@@ -1231,4 +1263,5 @@ test "Lex stuff" {
         // }
         _ = lexer.lex();
     }
+    lexer.deinit();
 }
