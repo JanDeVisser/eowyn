@@ -1,6 +1,7 @@
 const std = @import("std");
+const fatal = @import("fatal.zig");
 const node = @import("node.zig");
-const lexer = @import("lexer.zig");
+const lx = @import("lexer.zig");
 const op = @import("operator.zig");
 
 const block = @import("syntax/block.zig");
@@ -18,16 +19,17 @@ const pSyntaxNode = node.pSyntaxNode;
 const SyntaxNodes = node.SyntaxNodes;
 
 pub const Parser = struct {
-    pub const LexerTypes = lexer.LexerTypes(op.EowynKeyword);
+    pub const LexerTypes = lx.LexerTypes(op.EowynKeyword);
 
     pub const Scanners = LexerTypes.ScannerPack(&[_]type{
         LexerTypes.RawScanner("@begin", "@end"),
         LexerTypes.CScannerPack,
     });
 
-    pub const Lexer = lexer.Lexer(LexerTypes, Scanners);
+    pub const Lexer = lx.Lexer(LexerTypes, Scanners);
     pub const Token = Lexer.Token;
-    pub const TokenLocation = lexer.TokenLocation;
+    pub const TokenLocation = lx.TokenLocation;
+    pub const TokenKind = lx.TokenKind;
 
     pub const ParserError = struct {
         location: TokenLocation,
@@ -65,31 +67,35 @@ pub const Parser = struct {
     pub fn append(this: *Parser, location: TokenLocation, comptime fmt: []const u8, args: anytype) void {
         const err = ParserError{
             .location = location,
-            .message = std.fmt.allocPrint(this.allocator, fmt, args),
+            .message = std.fmt.allocPrint(this.allocator, fmt, args) catch fatal.oom(),
         };
-        this.errors.append(err);
+        this.errors.append(err) catch fatal.oom();
     }
 
     pub fn parse(this: *Parser) ?*Node {
         var statements = SyntaxNodes.init(this.allocator);
-        const t = this.parse_statements(statements);
+        const t = this.parse_statements(&statements);
         std.debug.assert(t.matches(.EndOfFile));
         switch (statements.items.len) {
             0 => return null,
-            1 => return statements[0],
-            else => return this.tree.add(.Block, this.tree.get(statements[0]).location.merge(this.tree.get(statements.getLast()).location), .{ this.allocator, statements }),
+            1 => return &this.tree.nodes.items[statements.items[0]],
+            else => return this.tree.add(
+                .Block,
+                this.tree.get(statements.items[0]).location.merge(this.tree.get(statements.getLast()).location),
+                block.Block{ .allocator = this.allocator, .statements = statements },
+            ),
         }
     }
 
     pub fn parse_statements(this: *Parser, statements: *SyntaxNodes) LexerTypes.Token {
         while (true) {
-            const t = this.lexer.peek();
-            if (t.matches(.EndOfFile) || t.matches_symbol('}')) {
-                this.lexer.lex();
+            const t: Token = this.lexer.peek();
+            if (t.matches(TokenKind.EndOfFile) or t.matches_symbol('}')) {
+                _ = this.lexer.lex();
                 return t;
             }
             if (this.parse_statement()) |s| {
-                statements.append(s.index);
+                statements.append(s.index) catch fatal.oom();
             }
         }
     }
@@ -97,8 +103,8 @@ pub const Parser = struct {
     pub fn parse_module_statements(this: *Parser, statements: *SyntaxNodes) Token {
         while (true) {
             const t = this.lexer.peek();
-            if (t.matches(.EndOfFile) || t.matches_symbol('}')) {
-                this.lexer.lex();
+            if (t.matches(.EndOfFile) or t.matches_symbol('}')) {
+                _ = this.lexer.lex();
                 return t;
             }
             if (this.parse_module_level_statement()) |s| {
@@ -145,7 +151,10 @@ pub const Parser = struct {
     pub fn parse_statement(this: *Parser) ?*Node {
         const t = this.lexer.peek();
         switch (t.value) {
-            .EndOfFile => return error.UnexpectedEndOfFile,
+            .EndOfFile => {
+                this.append(this.lexer.location, "Unexpected end of file", .{});
+                return null;
+            },
             .Identifier => {
                 if (this.lexer.cursor > 2 and
                     this.lexer.tokens.items[this.lexer.cursor - 1].matches_symbol(':') and
@@ -157,12 +166,12 @@ pub const Parser = struct {
                 _ = this.lexer.lex();
                 if (this.lexer.matches_symbol(':')) {
                     _ = this.lexer.lex();
-                    return parse_statement();
+                    return this.parse_statement();
                 }
                 this.lexer.push_back();
-                return this.parse_expression();
+                return this.parse_expression(0);
             },
-            .Number, .QuotedString => return this.parse_expression(),
+            .Number, .QuotedString => return this.parse_expression(0),
             .Keyword => |kw| {
                 switch (kw) {
                     .Break, .Continue => return this.parse_break_continue(),
@@ -182,7 +191,7 @@ pub const Parser = struct {
                     .While => return this.parse_while(),
                     .Yield => return this.parse_yield(),
                     else => {
-                        this.append(t, "Unexpected keyword `{}` parsing statement", .{this.text_of(t)});
+                        this.append(t.location, "Unexpected keyword `{}` parsing statement", .{this.text_of(t)});
                         _ = this.lexer.lex();
                         return null;
                     },
@@ -280,7 +289,11 @@ pub const Parser = struct {
         var ret: ?pSyntaxNode = null;
         switch (token.value) {
             .Number => {
-                ret = this.tree.add(.Number, token.location, .{ text_of(token), token.number_type() });
+                ret = this.tree.add(
+                    .Number,
+                    token.location,
+                    constant.Number{ .number = text_of(token), .number_type = token.number_type() },
+                );
                 _ = this.lexer.lex();
             },
             .QuotedString => {
@@ -289,7 +302,11 @@ pub const Parser = struct {
                     this.append(token, "Single quoted string should contain exactly one character");
                     return null;
                 }
-                ret = this.tree.add(.QuotedString, token.location, .{ this.text_of(token), token.quoted_string().quote_type });
+                ret = this.tree.add(
+                    .QuotedString,
+                    token.location,
+                    constant.QuotedString{ .string = this.text_of(token), .quote_type = token.quoted_string().quote_type },
+                );
             },
             .Identifier => {
                 _ = this.lexer.lex();
@@ -311,7 +328,7 @@ pub const Parser = struct {
                 //     }
                 // }
                 // this.lexer.push_back(bm);
-                ret = this.tree.add(.Identifier, token.location, .{this.text_of(token)});
+                ret = this.tree.add(.Identifier, token.location, variable.Identifier{ .identifier = this.text_of(token) });
             },
             .Keyword => |kw| {
                 switch (kw) {
@@ -319,15 +336,15 @@ pub const Parser = struct {
                     .Include => return this.parse_include(),
                     .False => {
                         _ = this.lexer.lex();
-                        return this.tree.add(.BoolConstant, token.location, .{false});
+                        return this.tree.add(.BoolConstant, token.location, constant.BoolConstant{ .value = false });
                     },
                     .True => {
                         _ = this.lexer.lex();
-                        return this.tree.add(.BoolConstant, token.location, .{true});
+                        return this.tree.add(.BoolConstant, token.location, constant.BoolConstant{ .value = true });
                     },
                     .Null => {
                         _ = this.lexer.lex();
-                        return this.tree.add(.Nullptr, token.location, .{});
+                        return this.tree.add(.Nullptr, token.location, constant.Nullptr{});
                     },
                     else => {},
                 }
@@ -340,7 +357,7 @@ pub const Parser = struct {
                         this.append(token, "Expected operand following prefix operator '{}'", .{@tagName(operator.op)});
                         return null;
                     }
-                    ret = this.tree.add(.UnaryExpression, op_token.location.merge(operand.location), .{ op.op, operand });
+                    ret = this.tree.add(.UnaryExpression, op_token.location.merge(operand.location), expression.UnaryExpression{ .op = op.op, .operand = operand });
                 } else {
                     this.append(token, "Unexpected keyword '{}' parsing primary expression", .{@tagName(kw)});
                     return null;
@@ -350,7 +367,7 @@ pub const Parser = struct {
                 if (token.symbol_code() == '(') {
                     _ = this.lexer.lex();
                     if (this.lexer.accept_symbol(')')) {
-                        return this.tree.add(.Void, token.location, .{});
+                        return this.tree.add(.Void, token.location, block.Void{});
                     }
                     ret = this.parse_expression(0);
                     this.lexer.expect_symbol(')') catch {
@@ -366,7 +383,7 @@ pub const Parser = struct {
                             this.append(token, "Expected operand following prefix operator '{}'", .{@tagName(operator.op)});
                             return null;
                         }
-                        ret = this.tree.add(.UnaryExpression, op_token.location.merge(operand.location), .{ operator.op, operand });
+                        ret = this.tree.add(.UnaryExpression, op_token.location.merge(operand.location), expression.UnaryExpression{ .op = operator.op, .operand = operand });
                     } else {
                         this.append(token, "Unexpected token {} `{}`", .{ @tagName(token.value), text_of(token) });
                         ret = null;
@@ -754,7 +771,7 @@ pub const Parser = struct {
                     this.append(this.lexer.location, "Expected generic type parameter name", .{});
                     return null;
                 };
-                generics.append(this.tree.add(.Identifier, generic_name.location, .{this.text_of(generic_name)}).index);
+                generics.append(this.tree.add(.Identifier, generic_name.location, variable.Identifier{ .identifier = this.text_of(generic_name) }).index);
                 if (this.lexer.accept_symbol('>')) {
                     break;
                 }
@@ -1073,5 +1090,5 @@ test "Parser" {
         \\ }
         \\
     );
-    parser.parse();
+    _ = parser.parse();
 }

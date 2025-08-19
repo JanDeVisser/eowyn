@@ -1,4 +1,5 @@
 const std = @import("std");
+const fatal = @import("fatal.zig");
 const expect = std.testing.expect;
 
 pub const TokenLocation = struct {
@@ -247,7 +248,7 @@ pub fn LexerTypes(comptime Keywords: type) type {
                 };
             }
 
-            pub fn matches_keyword(this: *const Token, kw: Self.KW) bool {
+            pub fn matches_keyword(this: *const Token, kw: Keywords) bool {
                 return switch (this.value) {
                     .Keyword => |keyw| {
                         return keyw == kw;
@@ -394,7 +395,7 @@ pub fn LexerTypes(comptime Keywords: type) type {
                 state: *State,
 
                 pub fn init(allocator: std.mem.Allocator) Self {
-                    const state = allocator.create(State) catch std.builtin.panic("OOM!", null, null);
+                    const state = allocator.create(State) catch fatal.oom();
                     state.in_comment = false;
                     return .{
                         .allocator = allocator,
@@ -763,7 +764,7 @@ pub fn Lexer(comptime Types: type, Scanner: type) type {
                 switch (ret.result) {
                     .Token => |*token| {
                         token.location = loc;
-                        this.tokens.append(token.*) catch std.builtin.panic("OOM!", null, null);
+                        this.tokens.append(token.*) catch fatal.oom();
                     },
                     else => {},
                 }
@@ -778,7 +779,7 @@ pub fn Lexer(comptime Types: type, Scanner: type) type {
                 }
                 loc.length = 0;
             }
-            this.tokens.append(Token.end_of_file()) catch std.builtin.panic("OOM!", null, null);
+            this.tokens.append(Token.end_of_file()) catch fatal.oom();
             this.cursor = 0;
             this.current = if (this.tokens.items.len > 0) this.tokens.items[0] else Token.end_of_file();
             this.location = if (this.tokens.items.len > 0) this.current.location else TokenLocation.init();
@@ -802,7 +803,7 @@ pub fn Lexer(comptime Types: type, Scanner: type) type {
             return ret;
         }
 
-        pub fn expect(this: *Self, kind: TokenKind) !Token {
+        pub fn expect(this: *Self, comptime kind: TokenKind) !Token {
             const ret = this.peek();
             if (!ret.matches(kind)) {
                 return error.UnexpectedTokenKind;
@@ -969,19 +970,19 @@ test "Raw Scanner" {
                 if (t.value.Raw.end) |end| {
                     try expect(end ==
                         \\@begin
-                        \\   There is stuff here
-                        \\
+                            \\   There is stuff here
+                            \\
 
-                        .len);
+                            .len);
                 } else {
                     try expect(false);
                 }
                 try expect(r.matched ==
                     \\@begin
-                    \\   There is stuff here
-                    \\@end
+                        \\   There is stuff here
+                        \\@end
 
-                    .len);
+                        .len);
             },
             else => try expect(false),
         }

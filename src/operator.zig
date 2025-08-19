@@ -1,5 +1,6 @@
 const std = @import("std");
 const lexer = @import("lexer.zig");
+const fatal = @import("fatal.zig");
 
 pub const Precedence = u16;
 
@@ -51,28 +52,30 @@ pub const EowynKeyword = enum {
     Yield,
 
     const Self = @This();
-    const strings = std.AutoHashMap([]const u8, Self).initComptime(.{
-        .{ "&=", .AssignAnd },
-        .{ "-=", .AssignDecrement },
-        .{ "/=", .AssignDivide },
-        .{ "+=", .AssignIncrement },
-        .{ "%=", .AssignModulo },
-        .{ "*=", .AssignMultiply },
-        .{ "|=", .AssignOr },
-        .{ "<<=", .AssignShiftLeft },
-        .{ ">>=", .AssignShiftRight },
-        .{ "^=", .AssignXor },
-        .{ "==", .Equals },
-        .{ "->", .ExternLink },
-        .{ ">=", .GreaterEqual },
-        .{ "<=", .LessEqual },
-        .{ "&&", .LogicalAnd },
-        .{ "||", .LogicalOr },
-        .{ "!=", .NotEqual },
-        .{ "<<", .ShiftLeft },
-        .{ ">>", .ShiftRight },
-    });
+    var strings: ?std.AutoHashMap(Self, []const u8) = null;
     pub fn match(s: []const u8) ?lexer.KeywordMatch(Self) {
+        if (strings == null) {
+            strings = std.AutoHashMap(Self, []const u8).init(std.heap.c_allocator);
+            strings.?.put(.AssignAnd, "&=") catch fatal.oom();
+            strings.?.put(.AssignDecrement, "-=") catch fatal.oom();
+            strings.?.put(.AssignDivide, "/=") catch fatal.oom();
+            strings.?.put(.AssignIncrement, "+=") catch fatal.oom();
+            strings.?.put(.AssignModulo, "%=") catch fatal.oom();
+            strings.?.put(.AssignMultiply, "*=") catch fatal.oom();
+            strings.?.put(.AssignOr, "|=") catch fatal.oom();
+            strings.?.put(.AssignShiftLeft, "<<=") catch fatal.oom();
+            strings.?.put(.AssignShiftRight, ">>=") catch fatal.oom();
+            strings.?.put(.AssignXor, "^=") catch fatal.oom();
+            strings.?.put(.Equals, "==") catch fatal.oom();
+            strings.?.put(.ExternLink, "->") catch fatal.oom();
+            strings.?.put(.GreaterEqual, ">=") catch fatal.oom();
+            strings.?.put(.LessEqual, "<=") catch fatal.oom();
+            strings.?.put(.LogicalAnd, "&&") catch fatal.oom();
+            strings.?.put(.LogicalOr, "||") catch fatal.oom();
+            strings.?.put(.NotEqual, "!=") catch fatal.oom();
+            strings.?.put(.ShiftLeft, "<<") catch fatal.oom();
+            strings.?.put(.ShiftRight, ">>") catch fatal.oom();
+        }
         return lexer.match_enum(Self, s, strings);
     }
 };

@@ -55,6 +55,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    lexer_tests.linkLibC();
+
     const run_lexer_tests = b.addRunArtifact(lexer_tests);
 
     const parser_tests = b.addTest(.{
@@ -62,6 +64,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    parser_tests.linkLibC();
 
     const run_parser_tests = b.addRunArtifact(parser_tests);
     const test_step = b.step("test", "Run unit tests");

@@ -1,4 +1,5 @@
 const std = @import("std");
+const fatal = @import("fatal.zig");
 const lexer = @import("lexer.zig");
 const operator = @import("operator.zig");
 
@@ -90,7 +91,7 @@ pub const Tree = struct {
             .location = location,
             .value = node_value,
         };
-        this.nodes.append(newnode);
+        this.nodes.append(newnode) catch fatal.oom();
         return &this.nodes.items[this.nodes.items.len - 1];
     }
 
