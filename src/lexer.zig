@@ -81,17 +81,22 @@ pub fn KeywordMatch(comptime Keywords: type) type {
     };
 }
 
-pub fn match_enum(comptime Keywords: type, s: []const u8) ?KeywordMatch(Keywords) {
+pub fn match_enum(comptime Keywords: type, s: []const u8, strings: ?std.AutoHashMap(Keywords, []const u8)) ?KeywordMatch(Keywords) {
     var prefix: ?usize = null;
-    var buffer: [4096]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&buffer);
-    const allocator = fba.allocator();
     inline for (@typeInfo(Keywords).@"enum".fields) |fld| {
-        const name = std.ascii.allocLowerString(allocator, fld.name) catch std.builtin.panic("OOM", null, null);
+        const v: Keywords = @enumFromInt(fld.value);
+        const name = blk: {
+            if (strings) |map| {
+                if (map.contains(v)) {
+                    break :blk map.get(v) orelse unreachable;
+                }
+            }
+            break :blk fld.name;
+        };
         if (std.mem.startsWith(u8, name, s)) {
             if (std.mem.eql(u8, name, s)) {
                 return .{
-                    .keyword = @enumFromInt(fld.value),
+                    .keyword = v,
                     .match_type = KeywordMatch(Keywords).MatchType.FullMatch,
                 };
             }
@@ -687,13 +692,13 @@ pub fn LexerTypes(comptime Keywords: type) type {
 
             pub fn scan(_: *const SymbolMuncher, buffer: []const u8) ?ScanResult {
                 if (buffer.len == 0) {
-                    return null;
+                    return ScanResult.token(Token.end_of_file(), 1);
                 }
                 return ScanResult.token(Token.symbol(@as(u32, buffer[0])), 1);
             }
         };
 
-        const CScannerPack = ScannerPack(&[_]type{
+        pub const CScannerPack = ScannerPack(&[_]type{
             CStyleComments,
             NumberScanner,
             QuotedStringScanner(SingleDoubleQuotes),
@@ -703,7 +708,7 @@ pub fn LexerTypes(comptime Keywords: type) type {
             SymbolMuncher,
         });
 
-        const CScannerPackNoIgnore = ScannerPack(&[_]type{
+        pub const CScannerPackNoIgnore = ScannerPack(&[_]type{
             CStyleCommentsNoIgnore,
             NumberScanner,
             QuotedStringScanner(SingleDoubleQuotes),
@@ -717,156 +722,83 @@ pub fn LexerTypes(comptime Keywords: type) type {
 
 pub fn Lexer(comptime Types: type, Scanner: type) type {
     return struct {
-        const Keywords = Types.Keywords;
-        const Token = Types.Token;
-        const ScanResult = Types.ScanResult;
-        const SkipToken = Types.SkipToken;
-        const Self = @This();
+        pub const Keywords = Types.Keywords;
+        pub const Token = Types.Token;
+        pub const ScanResult = Types.ScanResult;
+        pub const SkipToken = Types.SkipToken;
+        pub const Self = @This();
 
-        const Source = struct {
-            lexer: *Self,
-            scanner: Scanner,
-            buffer: []const u8,
-            index: usize = 0,
-            location: TokenLocation = .{},
-            current: ?Token = null,
-
-            pub fn init(lexer: *Self, src: []const u8) Source {
-                return .{
-                    .lexer = lexer,
-                    .scanner = Scanner.init(lexer.allocator),
-                    .buffer = src,
-                };
-            }
-
-            pub fn deinit(this: *Source) void {
-                this.scanner.deinit();
-            }
-
-            pub fn push_back(this: *Source, token: *const Token) void {
-                this.index = token.location.index + token.location.length;
-                this.location = token.location;
-                this.location.index = this.index;
-                if (token.matches(TokenKind.EndOfLine)) {
-                    this.location.line += 1;
-                    this.location.column = 0;
-                } else {
-                    this.location.column += token.location.length;
-                }
-                this.current = null;
-            }
-
-            pub fn peek(this: *Source) ScanResult {
-                if (this.current != null) {
-                    return ScanResult.token(this.current.?, this.current.?.location.length);
-                }
-                if (this.index >= this.buffer.len) {
-                    return ScanResult.token(Token.end_of_file(), 1);
-                }
-                const res = this.scanner.scan(this.buffer[this.index..]);
-                std.debug.assert(res != null);
-                var ret = res.?;
-                this.index += ret.matched;
-                this.location.length = ret.matched;
-                switch (ret.result) {
-                    .Token => |*token| token.location = this.location,
-                    else => {},
-                }
-                while (this.location.index < this.index) {
-                    if (this.buffer[this.location.index] == '\n') {
-                        this.location.line += 1;
-                        this.location.column = 0;
-                    } else {
-                        this.location.column += 1;
-                    }
-                    this.location.index += 1;
-                }
-                this.location.length = 0;
-                return ret;
-            }
-
-            pub fn lex(this: *Source) void {
-                if (this.current != null) {
-                    this.current = null;
-                }
-            }
-
-            pub fn length(this: *const Source) usize {
-                return this.buffer.len;
-            }
-
-            pub fn exhausted(this: *const Source) bool {
-                return this.index >= this.buffer.len;
-            }
-        };
-
-        current: ?Token = null,
         allocator: std.mem.Allocator,
-        sources: std.ArrayList(Source),
-        last_location: TokenLocation = .{},
+        tokens: std.ArrayList(Token),
+        buffer: []const u8 = "",
+        current: Token,
+        cursor: usize = 0,
+        location: TokenLocation = undefined,
 
         pub fn init(allocator: std.mem.Allocator) Self {
             return .{
                 .allocator = allocator,
-                .sources = std.ArrayList(Source).init(allocator),
+                .tokens = std.ArrayList(Token).init(allocator),
+                .current = Token.end_of_file(),
             };
         }
 
         pub fn deinit(this: *Self) void {
-            for (this.sources.items) |*s| {
-                s.deinit();
-            }
-            this.sources.deinit();
+            this.tokens.deinit();
         }
 
         pub fn push_source(this: *Self, src: []const u8) void {
-            this.sources.append(Source.init(this, src)) catch std.builtin.panic("OOM", null, null);
-        }
+            this.buffer = src;
 
-        pub fn source(this: *const Self) *Source {
-            std.debug.assert(this.sources.items.len > 0);
-            return &this.sources.items[this.sources.items.len - 1];
+            var index: usize = 0;
+            var loc = TokenLocation.init();
+            var scanner = Scanner.init(this.allocator);
+            defer scanner.deinit();
+            while (index < this.buffer.len) {
+                const res = scanner.scan(this.buffer[index..]);
+                std.debug.assert(res != null);
+                var ret = res.?;
+                index += ret.matched;
+                loc.length = ret.matched;
+                switch (ret.result) {
+                    .Token => |*token| {
+                        token.location = loc;
+                        this.tokens.append(token.*) catch std.builtin.panic("OOM!", null, null);
+                    },
+                    else => {},
+                }
+                while (loc.index < index) {
+                    if (this.buffer[loc.index] == '\n') {
+                        loc.line += 1;
+                        loc.column = 0;
+                    } else {
+                        loc.column += 1;
+                    }
+                    loc.index += 1;
+                }
+                loc.length = 0;
+            }
+            this.tokens.append(Token.end_of_file()) catch std.builtin.panic("OOM!", null, null);
+            this.cursor = 0;
+            this.current = if (this.tokens.items.len > 0) this.tokens.items[0] else Token.end_of_file();
+            this.location = if (this.tokens.items.len > 0) this.current.location else TokenLocation.init();
         }
 
         pub fn text(this: *const Self, token: Token) []const u8 {
-            return this.source().buffer[token.location.index .. token.location.index + token.location.length];
+            return this.buffer[token.location.index .. token.location.index + token.location.length];
         }
 
         pub fn peek(this: *Self) Token {
-            if (this.current != null) {
-                return this.current.?;
-            }
-            if (this.sources.items.len == 0) {
-                this.current.? = Token.end_of_file();
-                return this.current.?;
-            }
-            while (this.current == null) {
-                const res = this.source().peek();
-                switch (res.result) {
-                    .Token => |token| blk: {
-                        if (token.matches(TokenKind.EndOfFile)) {
-                            var s = this.sources.pop();
-                            s.deinit();
-                            if (!this.exhausted()) {
-                                break :blk;
-                            }
-                        }
-                        this.current = token;
-                    },
-                    .Buffer => |buf| this.push_source(buf),
-                    .SkipToken => {},
-                }
-            }
-            return this.current.?;
+            return this.current;
         }
 
         pub fn lex(this: *Self) Token {
-            const ret = this.peek();
-            if (this.sources.items.len > 0) {
-                this.source().lex();
+            const ret = this.current;
+            if (this.cursor < this.tokens.items.len) {
+                this.cursor += 1;
+                this.current = if (this.cursor < this.tokens.items.len) this.tokens.items[this.cursor] else Token.end_of_file();
+                this.location = if (this.cursor < this.tokens.items.len) this.current.location else TokenLocation.init();
             }
-            this.current = null;
-            this.last_location = ret.location;
             return ret;
         }
 
@@ -937,18 +869,27 @@ pub fn Lexer(comptime Types: type, Scanner: type) type {
             return this.lex();
         }
 
-        pub fn next_matches(this: *Self, kind: TokenKind) bool {
-            const n = this.peek();
-            return n.matches(kind);
+        pub fn matches(this: *Self, kind: TokenKind) bool {
+            return this.current.matches(kind);
+        }
+
+        pub fn matches_symbol(this: *Self, sym: u32) bool {
+            return this.current.matches_symbol(sym);
+        }
+
+        pub fn matches_keyword(this: *Self, keyword: Keywords) bool {
+            return this.current.matches_keyword(keyword);
         }
 
         pub fn exhausted(this: *const Self) bool {
-            return this.sources.items.len == 0;
+            return this.cursor < this.tokens.items.len;
         }
 
-        pub fn location(this: *const Self) TokenLocation {
-            std.debug.assert(!this.exhausted());
-            return this.source().location();
+        pub fn push_back(this: *Self) void {
+            std.debug.assert(this.cursor > 0 and this.cursor < this.tokens.items.len);
+            this.cursor -= 1;
+            this.current = this.tokens.items[this.cursor];
+            this.location = this.current.location;
         }
     };
 }
@@ -1149,7 +1090,7 @@ const TestKeywords = enum {
 
     const Self = @This();
     pub fn match(s: []const u8) ?KeywordMatch(Self) {
-        return match_enum(Self, s);
+        return match_enum(Self, s, null);
     }
 };
 
@@ -1157,7 +1098,7 @@ test "Keyword Scanner" {
     const lexer_types = LexerTypes(TestKeywords);
     var scanner = lexer_types.KeywordScanner.init(std.heap.c_allocator);
     var ix: usize = 0;
-    const kws = "if while else";
+    const kws = "If While Else";
     const kw_codes = .{ TestKeywords.If, TestKeywords.While, TestKeywords.Else };
     inline for (0..3, kw_codes) |_, code| {
         const res = scanner.scan(kws[ix..]);
@@ -1175,10 +1116,10 @@ test "Keyword Scanner" {
 }
 
 const test_string =
-    \\ if(x == 12) {
+    \\ If(x == 12) {
     \\   // Success
     \\   print("Boo!");
-    \\ } else {
+    \\ } Else {
     \\   /* Failure */
     \\   print("Error");
     \\ }
