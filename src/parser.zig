@@ -8,6 +8,7 @@ const block = @import("syntax/block.zig");
 const constant = @import("syntax/constant.zig");
 const expression = @import("syntax/expression.zig");
 const flowcontrol = @import("syntax/flowcontrol.zig");
+const function = @import("syntax/function.zig");
 const import = @import("syntax/import.zig");
 const preprocess = @import("syntax/preprocess.zig");
 const typespec = @import("syntax/typespec.zig");
@@ -90,7 +91,7 @@ pub const Parser = struct {
     pub fn parse_statements(this: *Parser, statements: *SyntaxNodes) LexerTypes.Token {
         while (true) {
             const t: Token = this.lexer.peek();
-            if (t.matches(TokenKind.EndOfFile) or t.matches_symbol('}')) {
+            if (t.matches(.EndOfFile) or t.matches_symbol('}')) {
                 _ = this.lexer.lex();
                 return t;
             }
@@ -123,7 +124,7 @@ pub const Parser = struct {
             .Identifier => {
                 _ = this.lexer.lex();
                 this.lexer.expect_symbol(':') catch {
-                    this.append(this.lexer.current_location, "Expected variable declaration", {});
+                    this.append(this.lexer.current_location, "Expected variable declaration", .{});
                     return null;
                 };
                 return parse_statement();
@@ -144,7 +145,7 @@ pub const Parser = struct {
             else => {},
         }
         _ = this.lexer.lex();
-        this.append(t, "Unexpected token `{}`", .{text_of(t)});
+        this.append(t, "Unexpected token `{s}`", .{text_of(t)});
         return null;
     }
 
@@ -158,7 +159,7 @@ pub const Parser = struct {
             .Identifier => {
                 if (this.lexer.cursor > 2 and
                     this.lexer.tokens.items[this.lexer.cursor - 1].matches_symbol(':') and
-                    this.lexer.tokens.items[this.lexer.cursor - 1].matches(.Identifier))
+                    this.lexer.tokens.items[this.lexer.cursor - 2].matches(.Identifier))
                 {
                     // This is the type of a variable decl:
                     return this.parse_var_decl();
@@ -191,7 +192,7 @@ pub const Parser = struct {
                     .While => return this.parse_while(),
                     .Yield => return this.parse_yield(),
                     else => {
-                        this.append(t.location, "Unexpected keyword `{}` parsing statement", .{this.text_of(t)});
+                        this.append(t.location, "Unexpected keyword `{s}` parsing statement", .{this.text_of(t)});
                         _ = this.lexer.lex();
                         return null;
                     },
@@ -203,37 +204,41 @@ pub const Parser = struct {
                     '{' => {
                         _ = this.lexer.lex();
                         var new_block = SyntaxNodes.init(this.allocator);
-                        const end_token = this.parse_statements(new_block);
+                        const end_token = this.parse_statements(&new_block);
                         if (!end_token.matches_symbol('}')) {
-                            this.append(t, "Unexpected end of block", .{});
+                            this.append(t.location, "Unexpected end of block", .{});
                             return null;
                         } else {
-                            if (new_block.empty()) {
-                                return this.tree.add(.Void, t.location.merge(end_token.location), .{});
+                            if (new_block.items.len == 0) {
+                                return this.tree.add(.Void, t.location.merge(end_token.location), block.Void{});
                             }
-                            return this.tree.add(.Block, t.location.merge(end_token.location), block.Block.init(new_block));
+                            return this.tree.add(
+                                .Block,
+                                t.location.merge(end_token.location),
+                                block.Block{ .allocator = this.allocator, .statements = new_block },
+                            );
                         }
                     },
                     '=' => {
                         if (this.lexer.cursor > 2 and
-                            this.lexer.tokens.items[this.lexer.items - 1].matches_symbol(':') and
-                            this.lexer.tokens.items[this.lexer.items - 2].matches(.Identifier))
+                            this.lexer.tokens.items[this.lexer.cursor - 1].matches_symbol(':') and
+                            this.lexer.tokens.items[this.lexer.cursor - 2].matches(.Identifier))
                         {
                             // This is the '=' of a variable decl with implied type:
                             return this.parse_var_decl();
                         }
-                        if (this.parse_expression()) |expr| {
+                        if (this.parse_expression(0)) |expr| {
                             return expr;
                         }
-                        this.append(t, "Unexpected symbol `{:c}`", .{sym});
+                        this.append(t.location, "Unexpected symbol `{c}`", .{@as(u8, @truncate(sym))});
                         _ = this.lexer.lex();
                         return null;
                     },
                     else => {
-                        if (this.parse_expression()) |expr| {
+                        if (this.parse_expression(0)) |expr| {
                             return expr;
                         }
-                        this.append(t, "Unexpected symbol `{:c}`", .{sym});
+                        this.append(t.location, "Unexpected symbol `{c}`", .{@as(u8, @truncate(sym))});
                         _ = this.lexer.lex();
                         return null;
                     },
@@ -243,8 +248,12 @@ pub const Parser = struct {
                 const raw = t.raw_text();
                 std.debug.assert(std.mem.eql(u8, raw.marker, "@begin"));
                 _ = this.lexer.lex();
-                if (raw.end) |end| {
-                    return this.tree.add(.Insert, t.location, .{this.text_at(raw.start, end)});
+                if (raw.end) |_| {
+                    return this.tree.add(
+                        .Insert,
+                        t.location,
+                        preprocess.Insert{ .script_text = this.text_of(t) },
+                    );
                 } else {
                     this.append(t.location, "Unclosed `@insert` block", .{});
                     return null;
@@ -252,7 +261,7 @@ pub const Parser = struct {
             },
             else => {
                 _ = this.lexer.lex();
-                this.append(t, "Unexpected token `{}`", .{this.text_of(t)});
+                this.append(t.location, "Unexpected token `{s}`", .{this.text_of(t)});
                 return null;
             },
         }
@@ -273,7 +282,7 @@ pub const Parser = struct {
         return this.text_at_location(token.location);
     }
 
-    pub fn text_at_location(this: *const Parser, location: this.lexer.TokenLocation) []const u8 {
+    pub fn text_at_location(this: *const Parser, location: lx.TokenLocation) []const u8 {
         return this.text_at_index(location.index, location.length);
     }
 
@@ -286,26 +295,29 @@ pub const Parser = struct {
 
     pub fn parse_primary(this: *Parser) ?*Node {
         const token = this.lexer.peek();
-        var ret: ?pSyntaxNode = null;
+        var ret: ?*Node = null;
         switch (token.value) {
             .Number => {
                 ret = this.tree.add(
                     .Number,
                     token.location,
-                    constant.Number{ .number = text_of(token), .number_type = token.number_type() },
+                    constant.Number{
+                        .number = this.text_of(token),
+                        .number_type = token.number_type(),
+                    },
                 );
                 _ = this.lexer.lex();
             },
             .QuotedString => {
                 _ = this.lexer.lex();
-                if (token.quoted_string().quote_type == .SingleQuote and token.location.length != 1) {
-                    this.append(token, "Single quoted string should contain exactly one character");
+                if (token.quote_type() == .SingleQuote and token.location.length != 1) {
+                    this.append(token.location, "Single quoted string should contain exactly one character", .{});
                     return null;
                 }
                 ret = this.tree.add(
                     .QuotedString,
                     token.location,
-                    constant.QuotedString{ .string = this.text_of(token), .quote_type = token.quoted_string().quote_type },
+                    constant.QuotedString{ .string = this.text_of(token), .quote_type = token.quote_type() },
                 );
             },
             .Identifier => {
@@ -320,7 +332,7 @@ pub const Parser = struct {
                 //         }
                 //         specs.push_back(spec);
                 //         if (this.lexer.accept_symbol('>')) {
-                //             return this.tree.add(StampedIdentifier, token.location + this.lexer.location, text_of(token), specs);
+                //             return this.tree.add(StampedIdentifier, token.location + this.lexer.location, this.text_of(token), specs);
                 //         }
                 //         if (!this.lexer.accept_symbol(',')) {
                 //             break;
@@ -352,19 +364,22 @@ pub const Parser = struct {
                 if (op_maybe) |operator| {
                     const bp = op.binding_power(operator);
                     const op_token = this.lexer.lex();
-                    const operand = if (op.op == .Sizeof) this.parse_type() else this.parse_expression(bp.right);
-                    if (operand == null) {
-                        this.append(token, "Expected operand following prefix operator '{}'", .{@tagName(operator.op)});
+                    const operand = (if (operator.op == .Sizeof) this.parse_type() else this.parse_expression(bp.right)) orelse {
+                        this.append(token.location, "Expected operand following prefix operator '{s}'", .{@tagName(operator.op)});
                         return null;
-                    }
-                    ret = this.tree.add(.UnaryExpression, op_token.location.merge(operand.location), expression.UnaryExpression{ .op = op.op, .operand = operand });
+                    };
+                    ret = this.tree.add(
+                        .UnaryExpression,
+                        op_token.location.merge(operand.location),
+                        expression.UnaryExpression{ .op = operator.op, .operand = operand.index },
+                    );
                 } else {
-                    this.append(token, "Unexpected keyword '{}' parsing primary expression", .{@tagName(kw)});
+                    this.append(token.location, "Unexpected keyword '{s}' parsing primary expression", .{@tagName(kw)});
                     return null;
                 }
             },
-            .Symbol => {
-                if (token.symbol_code() == '(') {
+            .Symbol => |sym| {
+                if (sym == '(') {
                     _ = this.lexer.lex();
                     if (this.lexer.accept_symbol(')')) {
                         return this.tree.add(.Void, token.location, block.Void{});
@@ -378,25 +393,28 @@ pub const Parser = struct {
                     if (this.check_prefix_op()) |operator| {
                         const bp = op.binding_power(operator);
                         const op_token = this.lexer.lex();
-                        const operand = this.parse_expression(bp.right);
-                        if (operand == null) {
-                            this.append(token, "Expected operand following prefix operator '{}'", .{@tagName(operator.op)});
+                        const operand = this.parse_expression(bp.right) orelse {
+                            this.append(token.location, "Expected operand following prefix operator '{s}'", .{@tagName(operator.op)});
                             return null;
-                        }
-                        ret = this.tree.add(.UnaryExpression, op_token.location.merge(operand.location), expression.UnaryExpression{ .op = operator.op, .operand = operand });
+                        };
+                        ret = this.tree.add(
+                            .UnaryExpression,
+                            op_token.location.merge(operand.location),
+                            expression.UnaryExpression{ .op = operator.op, .operand = operand.index },
+                        );
                     } else {
-                        this.append(token, "Unexpected token {} `{}`", .{ @tagName(token.value), text_of(token) });
+                        this.append(token.location, "Unexpected token {s} `{s}`", .{ @tagName(token.value), this.text_of(token) });
                         ret = null;
                     }
                 }
             },
             else => {
-                this.append(token, "Unexpected token {} `{}`", .{ @tagName(token.value), text_of(token) });
+                this.append(token.location, "Unexpected token {s} `{s}`", .{ @tagName(token.value), this.text_of(token) });
                 ret = null;
             },
         }
         if (ret == null) {
-            this.append(token, "Expected primary expression", .{});
+            this.append(token.location, "Expected primary expression", .{});
         }
         return ret;
     }
@@ -405,7 +423,7 @@ pub const Parser = struct {
     // https://matklad.github.io/2020/04/13/simple-but-powerful-pratt-parsing.html
     pub fn parse_expression(this: *Parser, min_prec: op.Precedence) ?*Node {
         var lhs = this.parse_primary() orelse return null;
-        while (!this.lexer.next_matches(.EndOfFile) and this.check_op()) {
+        while (!this.lexer.matches(.EndOfFile) and this.check_op()) {
             if (this.check_postfix_op()) |operator| {
                 const bp = op.binding_power(operator);
                 if (bp.left < min_prec) {
@@ -413,7 +431,7 @@ pub const Parser = struct {
                 }
                 if (operator.op == .Subscript) {
                     _ = this.lexer.lex();
-                    const rhs = this.parse_expression() orelse {
+                    const rhs = this.parse_expression(0) orelse {
                         this.append(this.lexer.peek().location, "Expected subscript expression", .{});
                         return null;
                     };
@@ -421,9 +439,17 @@ pub const Parser = struct {
                         this.append(this.lexer.current.location, "Expected ']'", .{});
                         return null;
                     };
-                    lhs = this.tree.add(.BinaryExpression, lhs.location.merge(rhs.location), .{ lhs, operator.op, rhs });
+                    lhs = this.tree.add(
+                        .BinaryExpression,
+                        lhs.location.merge(rhs.location),
+                        expression.BinaryExpression{ .lhs = lhs.index, .op = operator.op, .rhs = rhs.index },
+                    );
                 } else {
-                    lhs = this.tree.add(.UnaryExpression, lhs.location.merge(this.lexer.peek().location), .{ operator.op, lhs });
+                    lhs = this.tree.add(
+                        .UnaryExpression,
+                        lhs.location.merge(this.lexer.peek().location),
+                        expression.UnaryExpression{ .op = operator.op, .operand = lhs.index },
+                    );
                     _ = this.lexer.lex();
                 }
                 continue;
@@ -436,15 +462,23 @@ pub const Parser = struct {
                 if (operator.op == .Call) {
                     // Don't lex the '(' so parse_primary will return a
                     // single expression, probably a binop with op = ','.
-                    const param_list = parse_primary() orelse {
+                    const param_list = this.parse_primary() orelse {
                         this.append(lhs.location, "Could not parse function call argument list", .{});
                         return null;
                     };
-                    lhs = this.tree.add(.BinaryExpression, lhs.location.merge(param_list.location), .{ lhs, .Call, param_list });
+                    lhs = this.tree.add(
+                        .BinaryExpression,
+                        lhs.location.merge(param_list.location),
+                        expression.BinaryExpression{ .lhs = lhs.index, .op = .Call, .rhs = param_list.index },
+                    );
                 } else {
                     _ = this.lexer.lex();
-                    const rhs = (if (operator.op == .Cast) this.parse_type() else parse_expression(bp.right)) orelse return null;
-                    lhs = this.tree.add(.BinaryExpression, lhs.location.merge(rhs.location), .{ lhs, operator.op, rhs });
+                    const rhs = (if (operator.op == .Cast) this.parse_type() else this.parse_expression(bp.right)) orelse return null;
+                    lhs = this.tree.add(
+                        .BinaryExpression,
+                        lhs.location.merge(rhs.location),
+                        expression.BinaryExpression{ .lhs = lhs.index, .op = operator.op, .rhs = rhs.index },
+                    );
                 }
                 continue;
             }
@@ -460,8 +494,8 @@ pub const Parser = struct {
         }
         for (op.operators) |operator| {
             switch (operator.sym) {
-                .Char => |ch| return token.matches_symbol(ch),
-                .Keyword => |kw| return token.matches_keyword(kw),
+                .Char => |ch| if (token.matches_symbol(ch)) return true,
+                .Keyword => |kw| if (token.matches_keyword(kw)) return true,
             }
         }
         return false;
@@ -500,62 +534,79 @@ pub const Parser = struct {
         const t = this.lexer.peek();
         if (this.lexer.accept_symbol('&')) {
             if (this.parse_type()) |typ| {
-                return this.tree.add(.TypeSpecification, t.location.merge(typ.location), .{ .Reference = .{typ.index} });
+                return this.tree.add(
+                    .TypeSpecification,
+                    t.location.merge(typ.location),
+                    typespec.TypeSpecification{ .description = .{ .Reference = typ.index } },
+                );
             }
             return null;
         }
         if (this.lexer.accept_symbol('[')) {
             if (this.lexer.accept_symbol(']')) {
                 if (this.parse_type()) |typ| {
-                    return this.tree.add(.TypeSpecification, t.location.merge(typ.location), .{ .Slice = .{typ.index} });
+                    return this.tree.add(
+                        .TypeSpecification,
+                        t.location.merge(typ.location),
+                        typespec.TypeSpecification{ .description = .{ .Slice = typ.index } },
+                    );
                 }
                 return null;
             }
             if (this.lexer.accept_symbol('0')) {
                 this.lexer.expect_symbol(']') catch {
-                    this.append(this.this.lexer.location, "Expected `]` to close `[0`");
+                    this.append(this.lexer.location, "Expected `]` to close `[0`", .{});
                     return null;
                 };
                 if (this.parse_type()) |typ| {
-                    return this.tree.add(.TypeSpecification, t.location.merge(typ.location), .{ .ZeroTerminatedArray = .{typ.index} });
+                    return this.tree.add(
+                        .TypeSpecification,
+                        t.location.merge(typ.location),
+                        typespec.TypeSpecification{ .description = .{ .ZeroTerminatedArray = typ.index } },
+                    );
                 }
                 return null;
             }
             if (this.lexer.accept_symbol('*')) {
                 this.lexer.expect_symbol(']') catch {
-                    this.append(this.this.lexer.location, "Expected `]` to close `[*`");
+                    this.append(this.lexer.location, "Expected `]` to close `[*`", .{});
                     return null;
                 };
                 if (this.parse_type()) |typ| {
-                    return this.tree.add(.TypeSpecification, t.location.merge(typ.location), .{ .DynArray = .{typ.index} });
+                    return this.tree.add(
+                        .TypeSpecification,
+                        t.location.merge(typ.location),
+                        typespec.TypeSpecification{ .description = .{ .DynArray = typ.index } },
+                    );
                 }
                 return null;
             }
             const res = this.lexer.expect(.Number) catch {
-                this.append(this.lexer.location, "Expected array size, `0`, or `]`");
+                this.append(this.lexer.location, "Expected array size, `0`, or `]`", .{});
                 return null;
             };
             if (res.number_type() == .Decimal) {
-                this.append(res.location, "Array size must be integer");
+                this.append(res.location, "Array size must be integer", .{});
                 return null;
             } else {
                 this.lexer.expect_symbol(']') catch {
-                    this.append(this.this.lexer.location, "Expected `]` to close array descriptor");
+                    this.append(this.lexer.location, "Expected `]` to close array descriptor", .{});
                     return null;
                 };
-                const size = std.fmt.parseUnsigned(u64, this.text_of(res)) catch unreachable;
+                const size = std.fmt.parseUnsigned(u64, this.text_of(res), 0) catch unreachable;
                 if (this.parse_type()) |typ| {
-                    return this.tree.add(.TypeSpecification, t.location.merge(type.location), .{ .Array = .{
-                        typ.index,
-                        size,
-                    } });
+                    return this.tree.add(
+                        .TypeSpecification,
+                        t.location.merge(typ.location),
+                        typespec.TypeSpecification{ .description = .{ .Array = .{ .array_of = typ.index, .size = size } } },
+                    );
                 }
                 return null;
             }
         }
 
         const name = this.lexer.expect_identifier() catch {
-            this.append(this.lexer.location, "Expected type name");
+            this.append(this.lexer.location, "Expected type name", .{});
             return null;
         };
         var arguments = std.ArrayList(pSyntaxNode).init(this.allocator);
@@ -565,29 +616,41 @@ pub const Parser = struct {
                     break;
                 }
                 const arg = this.parse_type() orelse {
-                    this.append(this.lexer.location, "Expected template type specification");
+                    this.append(this.lexer.location, "Expected template type specification", .{});
                     return null;
                 };
-                arguments.append(arg.index);
+                arguments.append(arg.index) catch fatal.oom();
                 if (this.lexer.accept_symbol('>')) {
                     break;
                 }
                 this.lexer.expect_symbol(',') catch {
-                    this.append(this.lexer.location, "Expected `,` or `>`");
+                    this.append(this.lexer.location, "Expected `,` or `>`", .{});
                     return null;
                 };
             }
         }
-        var the_type = this.tree.add(.TypeSpecification, name.location.merge(this.lexer.location), .{ .TypeName = .{ this.text_of(name), arguments } });
+        var the_type = this.tree.add(
+            .TypeSpecification,
+            name.location.merge(this.lexer.location),
+            typespec.TypeSpecification{ .description = .{ .TypeName = .{ .name = this.text_of(name), .arguments = arguments } } },
+        );
         if (this.lexer.accept_symbol('?')) {
-            the_type = this.tree.add(.TypeSpecification, name.location.merge(this.lexer.location), .{ .Optional = .{the_type.index} });
+            the_type = this.tree.add(
+                .TypeSpecification,
+                name.location.merge(this.lexer.location),
+                typespec.TypeSpecification{ .description = .{ .Optional = the_type.index } },
+            );
         }
         if (this.lexer.accept_symbol('/')) {
             const error_type = this.parse_type() orelse {
-                this.append(this.lexer.location, "Expected error type");
+                this.append(this.lexer.location, "Expected error type", .{});
                 return null;
             };
-            return this.tree.add(.TypeSpecification, name.location.merge(this.lexer.location), .{ .Error = .{ the_type.index, error_type.index } });
+            return this.tree.add(
+                .TypeSpecification,
+                name.location.merge(this.lexer.location),
+                typespec.TypeSpecification{ .description = .{ .Error = .{ .success_type = the_type.index, .error_type = error_type.index } } },
+            );
         }
         return the_type;
     }
@@ -595,15 +658,9 @@ pub const Parser = struct {
     fn parse_const(this: *Parser) ?*Node {
         const t = this.lexer.peek();
         std.debug.assert(t.matches_keyword(.Const));
-        this.lexer.lex();
+        _ = this.lexer.lex();
         const decl = this.parse_var_decl() orelse return null;
-        const name: []const u8 = blk: {
-            switch (decl.node) {
-                .VariableDeclaration => |v| break :blk v.name,
-                else => unreachable,
-            }
-        };
-        return this.tree.add(.Const, t.location.merge(decl.location), .{ name, decl.index });
+        return this.tree.add(.Const, t.location.merge(decl.location), variable.Const{ .declaration = decl.index });
     }
 
     fn parse_break_continue(this: *Parser) ?*Node {
@@ -612,15 +669,15 @@ pub const Parser = struct {
         var label: ?[]const u8 = null;
         if (this.lexer.accept_symbol(':')) {
             const lbl = this.lexer.expect_identifier() catch {
-                this.append(kw.location, "Expected label name after `:`");
+                this.append(kw.location, "Expected label name after `:`", .{});
                 return null;
             };
             label = this.text_of(lbl);
         }
         if (kw.matches_keyword(.Break)) {
-            return this.tree.add(.Break, kw.location, .{label});
+            return this.tree.add(.Break, kw.location, flowcontrol.Break{ .label = label });
         }
-        return this.tree.add(.Continue, kw.location, .{label});
+        return this.tree.add(.Continue, kw.location, flowcontrol.Continue{ .label = label });
     }
 
     fn parse_embed(this: *Parser) ?*Node {
@@ -633,22 +690,30 @@ pub const Parser = struct {
             this.append(this.lexer.location, "Expected embed file name as quoted string", .{});
             return null;
         };
-        var fname = this.text_of(file_name.value());
+        var fname = this.text_of(file_name);
         fname = fname[1 .. fname.len - 1];
         this.lexer.expect_symbol(')') catch {
-            this.append(this.lexer.location, "Expected `)`");
+            this.append(this.lexer.location, "Expected `)`", .{});
             return null;
         };
-        return this.tree.add(.Embed, kw.location.merge(this.lexer.location), .{fname});
+        return this.tree.add(
+            .Embed,
+            kw.location.merge(this.lexer.location),
+            preprocess.Embed{ .file_name = fname },
+        );
     }
 
     fn parse_defer(this: *Parser) ?*Node {
         const kw = this.lexer.lex();
-        const stmt = parse_statement() orelse {
-            this.append(kw.location, "Could not parse defer statement", {});
+        const stmt = this.parse_statement() orelse {
+            this.append(kw.location, "Could not parse defer statement", .{});
             return null;
         };
-        return this.tree.add(.Defer, kw.location.merge(stmt.location), .{stmt.index});
+        return this.tree.add(
+            .Defer,
+            kw.location.merge(stmt.location),
+            flowcontrol.Defer{ .statement = stmt.index },
+        );
     }
 
     fn parse_enum(this: *Parser) ?*Node {
@@ -661,13 +726,14 @@ pub const Parser = struct {
         };
         var underlying: ?pSyntaxNode = null;
         if (this.lexer.accept_symbol(':')) {
-            underlying = this.parse_type() orelse {
+            const underlying_type = this.parse_type() orelse {
                 this.append(this.lexer.location, "Expected underlying type after `:`", .{});
                 return null;
             };
+            underlying = underlying_type.index;
         }
         this.lexer.expect_symbol('{') catch {
-            this.append(this.lexer.location, "Expected `{`", .{});
+            this.append(this.lexer.location, "Expected `{{`", .{});
             return null;
         };
         var values = SyntaxNodes.init(this.allocator);
@@ -678,48 +744,53 @@ pub const Parser = struct {
             };
             var payload: ?pSyntaxNode = null;
             if (this.lexer.accept_symbol('(')) {
-                payload = parse_type() orelse {
+                const payload_type = this.parse_type() orelse {
                     this.append(this.lexer.location, "Expected enum value payload type", .{});
                     return null;
                 };
+                payload = payload_type.index;
                 this.lexer.expect_symbol(')') catch {
                     this.append(this.lexer.location, "Expected `)` to close enum value payload type", .{});
                     return null;
                 };
             }
-            var value_node: ?pSyntaxNode = null;
+            var value_node: ?*Node = null;
             if (this.lexer.accept_symbol('=')) {
                 const value = this.lexer.peek();
                 if (!value.matches(.Number) or value.number_type() == .Decimal) {
-                    append(value.location, "Expected enum value"); // Make better
+                    this.append(value.location, "Expected enum value", .{}); // Make better
                     return null;
                 }
                 _ = this.lexer.lex();
-                value_node = this.tree.add(.Number, value.location, .{ text_of(value), value.number_type() });
+                value_node = this.tree.add(
+                    .Number,
+                    value.location,
+                    constant.Number{ .number = this.text_of(value), .number_type = value.number_type() },
+                );
             }
             values.append(this.tree.add(
-                typespec.EnumValue,
+                .EnumValue,
                 label.location.merge(this.lexer.location),
-                .{ text_of(label), if (value_node) |n| n.index else null, if (payload) |n| n.index else null },
-            ).index);
+                typespec.EnumValue{ .label = this.text_of(label), .value = if (value_node) |n| n.index else null, .payload = payload },
+            ).index) catch fatal.oom();
             if (!this.lexer.accept_symbol(',') and !this.lexer.accept_symbol('}')) {
-                append(this.lexer.location, "Expected `,` or `}`");
+                this.append(this.lexer.location, "Expected `,` or `}}`", .{});
                 return null;
             }
         }
         return this.tree.add(
-            typespec.Enum,
+            .Enum,
             enum_token.location.merge(this.lexer.location),
-            .{ text_of(name), values, if (underlying) |u| u.index else null },
+            typespec.Enum{ .name = this.text_of(name), .values = values, .underlying = underlying },
         );
     }
 
     fn parse_for(this: *Parser) ?*Node {
         var label: ?[]const u8 = null;
-        var location: this.lexer.TokenLocation = undefined;
+        var location: TokenLocation = undefined;
         if (this.lexer.cursor > 1 and
             this.lexer.tokens.items[this.lexer.cursor - 1].matches_symbol(':') and
-            this.lexer.tokens.items[this.lexer.cursor - 2].matches(.TokenKind))
+            this.lexer.tokens.items[this.lexer.cursor - 2].matches(.Identifier))
         {
             const lbl = this.lexer.tokens.items[this.lexer.cursor - 2];
             label = this.text_of(lbl);
@@ -732,24 +803,28 @@ pub const Parser = struct {
         }
 
         const var_name = this.lexer.expect_identifier() catch {
-            append(this.lexer.location, "Expected `for` range variable name", .{});
+            this.append(this.lexer.location, "Expected `for` range variable name", .{});
             return null;
         };
         var token = this.lexer.peek();
         if (token.matches(.Identifier) and std.mem.eql(u8, this.text_of(token), "in")) {
-            this.lexer.lex();
+            _ = this.lexer.lex();
         }
         token = this.lexer.peek();
-        const range = this.parse_expression() orelse {
-            append(token.location, "Error parsing `for` range", .{});
+        const range = this.parse_expression(0) orelse {
+            this.append(token.location, "Error parsing `for` range", .{});
             return null;
         };
         token = this.lexer.peek();
-        const stmt = parse_statement() orelse {
-            append(token.location, "Error parsing `for` block", .{});
+        const stmt = this.parse_statement() orelse {
+            this.append(token.location, "Error parsing `for` block", .{});
             return null;
         };
-        return this.tree.add(.ForStatement, location.merge(stmt.location), .{ this.text_of(var_name), range.index, stmt.index });
+        return this.tree.add(
+            .ForStatement,
+            location.merge(stmt.location),
+            flowcontrol.ForStatement{ .range_variable = this.text_of(var_name), .range_expr = range.index, .statement = stmt.index },
+        );
     }
 
     fn parse_func(this: *Parser) ?*Node {
@@ -771,7 +846,11 @@ pub const Parser = struct {
                     this.append(this.lexer.location, "Expected generic type parameter name", .{});
                     return null;
                 };
-                generics.append(this.tree.add(.Identifier, generic_name.location, variable.Identifier{ .identifier = this.text_of(generic_name) }).index);
+                generics.append(this.tree.add(
+                    .Identifier,
+                    generic_name.location,
+                    variable.Identifier{ .identifier = this.text_of(generic_name) },
+                ).index) catch fatal.oom();
                 if (this.lexer.accept_symbol('>')) {
                     break;
                 }
@@ -803,7 +882,11 @@ pub const Parser = struct {
                 return null;
             };
 
-            params.append(this.tree.add(.Parameter, param_name.location.merge(param_type.location), .{ this.text_of(param_name), param_type.index }).index);
+            params.append(this.tree.add(
+                .Parameter,
+                param_name.location.merge(param_type.location),
+                function.Parameter{ .name = this.text_of(param_name), .type_spec = param_type.index },
+            ).index) catch fatal.oom();
             if (this.lexer.accept_symbol(')')) {
                 break;
             }
@@ -812,54 +895,73 @@ pub const Parser = struct {
                 return null;
             };
         }
-        const return_type = parse_type() orelse {
+        const return_type = this.parse_type() orelse {
             this.append(this.lexer.location, "Expected return type", .{});
             return null;
         };
-        const signature = this.tree.add(.FunctionSignature, func.location.merge(return_type.location), .{ name, params, return_type });
-        if (this.lexer.accept_keyword(.ExternLink)) {
-            const link: Token = this.lexer.expect(.QuotedString) catch {
-                append(this.lexer.location, "Expected extern function name", .{});
-                return null;
-            };
-            if (link.quote_type() != .DoubleQuote) {
-                append(this.lexer.location, "Expected extern function name as double quoted string", .{});
-                return null;
+        const signature = this.tree.add(
+            .FunctionSignature,
+            func.location.merge(return_type.location),
+            function.FunctionSignature{ .name = name, .parameters = params, .return_type = return_type.index },
+        );
+        const impl = blk: {
+            if (this.lexer.accept_keyword(.ExternLink)) {
+                const link: Token = this.lexer.expect(.QuotedString) catch {
+                    this.append(this.lexer.location, "Expected extern function name", .{});
+                    return null;
+                };
+                if (link.quote_type() != .DoubleQuote) {
+                    this.append(this.lexer.location, "Expected extern function name as double quoted string", .{});
+                    return null;
+                }
+                var link_name = this.text_of(link);
+                if (link_name.len <= 2) {
+                    this.append(link.location, "Invalid extern function name", .{});
+                    return null;
+                }
+                link_name = link_name[1 .. link_name.len - 1];
+                break :blk this.tree.add(
+                    .ExternLink,
+                    link.location,
+                    function.ExternLink{ .link_name = link_name },
+                );
+            } else {
+                break :blk this.parse_statement() orelse {
+                    this.append(this.lexer.location, "Error parsing function body", .{});
+                    return null;
+                };
             }
-            const link_name = this.text_of(link);
-            if (link_name.length() <= 2) {
-                append(link.location, "Invalid extern function name", .{});
-                return null;
-            }
-            link_name = link_name[1 .. link_name.len - 1];
-            return this.tree.add(.FunctionDefinition, signature.location.merge(link.location), .{ signature.name, signature, this.tree.add(.ExternLink, link.location, .{link_name}).index });
-        }
-        const impl = parse_statement() orelse {
-            this.append(this.lexer.location, "Error parsing function body", .{});
-            return null;
         };
-        return this.tree.add(.FunctionDefinition, signature.location.merge(impl.location), .{ signature.name, signature, impl.index });
+        return this.tree.add(
+            .FunctionDefinition,
+            signature.location.merge(impl.location),
+            function.FunctionDefinition{ .name = name, .signature = signature.index, .implementation = impl.index },
+        );
     }
 
     fn parse_if(this: *Parser) ?*Node {
         const if_token = this.lexer.lex();
         std.debug.assert(if_token.matches_keyword(.If));
-        const condition = parse_expression() orelse {
+        const condition = this.parse_expression(0) orelse {
             this.append(if_token.location, "Error parsing `if` condition", .{});
             return null;
         };
-        const if_branch = parse_statement() orelse {
-            append(if_token.location, "Error parsing `if` branch", .{});
+        const if_branch = this.parse_statement() orelse {
+            this.append(if_token.location, "Error parsing `if` branch", .{});
             return null;
         };
-        const else_branch: ?pSyntaxNode = if (this.lexer.accept_keyword(.Else))
-            parse_statement() orelse {
-                append(this.lexer.location, "Error parsing `else` branch", .{});
+        const else_branch: ?*Node = if (this.lexer.accept_keyword(.Else))
+            this.parse_statement() orelse {
+                this.append(this.lexer.location, "Error parsing `else` branch", .{});
                 return null;
             }
         else
             null;
-        return this.tree.add(.IfStatement, if_token.location.merge(this.lexer.location), condition, if_branch, else_branch);
+        return this.tree.add(
+            .IfStatement,
+            if_token.location.merge(this.lexer.location),
+            flowcontrol.IfStatement{ .condition = condition.index, .if_branch = if_branch.index, .else_branch = if (else_branch) |b| b.index else null },
+        );
     }
 
     fn parse_import(this: *Parser) ?*Node {
@@ -869,7 +971,7 @@ pub const Parser = struct {
         var length: usize = 0;
         while (true) {
             const ident = this.lexer.expect_identifier() catch {
-                append(this.lexer.location, "Expected import path component", .{});
+                this.append(this.lexer.location, "Expected import path component", .{});
                 return null;
             };
             if (start == 0) {
@@ -886,28 +988,32 @@ pub const Parser = struct {
     fn parse_include(this: *Parser) ?*Node {
         const kw = this.lexer.lex();
         this.lexer.expect_symbol('(') catch {
-            append(kw.location, "Malformed '@include' statement: expected '('", .{});
+            this.append(kw.location, "Malformed '@include' statement: expected '('", .{});
             return null;
         };
         const file_name = this.lexer.expect(.QuotedString) catch {
-            append(this.lexer.location, "Malformed '@include' statement: no file name", .{});
+            this.append(this.lexer.location, "Malformed '@include' statement: no file name", .{});
             return null;
         };
         var fname = this.text_of(file_name);
         fname = fname[1 .. fname.len - 1];
         this.lexer.expect_symbol(')') catch {
-            append(this.lexer.location, "Malformed '@include' statement: expected ')'", .{});
+            this.append(this.lexer.location, "Malformed '@include' statement: expected ')'", .{});
             return null;
         };
-        return this.tree.add(.Include, kw.location.merge(this.lexer.location), .{fname});
+        return this.tree.add(
+            .Include,
+            kw.location.merge(this.lexer.location),
+            preprocess.Include{ .file_name = fname },
+        );
     }
 
     fn parse_loop(this: *Parser) ?*Node {
         var label: ?[]const u8 = null;
-        var location: this.lexer.TokenLocation = undefined;
+        var location: TokenLocation = undefined;
         if (this.lexer.cursor > 1 and
             this.lexer.tokens.items[this.lexer.cursor - 1].matches_symbol(':') and
-            this.lexer.tokens.items[this.lexer.cursor - 2].matches(.TokenKind))
+            this.lexer.tokens.items[this.lexer.cursor - 2].matches(.Identifier))
         {
             const lbl = this.lexer.tokens.items[this.lexer.cursor - 2];
             label = this.text_of(lbl);
@@ -918,11 +1024,15 @@ pub const Parser = struct {
         if (label == null) {
             location = loop_token.location;
         }
-        const stmt = parse_statement() orelse {
+        const stmt = this.parse_statement() orelse {
             this.append(loop_token.location, "Error parsing `loop` block", .{});
             return null;
         };
-        return this.tree.add(.LoopStatement, location.merge(stmt.location), label, .{stmt.index});
+        return this.tree.add(
+            .LoopStatement,
+            location.merge(stmt.location),
+            flowcontrol.LoopStatement{ .label = label, .statement = stmt.index },
+        );
     }
 
     fn parse_public(this: *Parser) ?*Node {
@@ -941,7 +1051,7 @@ pub const Parser = struct {
                 .Struct => |s| break :blk s.name,
                 .VariableDeclaration => |v| break :blk v.name,
                 else => {
-                    this.append(decl.location, "Cannot declare statement of type `{}` public", .{@tagName(decl.node)});
+                    this.append(decl.location, "Cannot declare statement of type `{s}` public", .{@tagName(decl.node)});
                     return null;
                 },
             }
@@ -952,14 +1062,14 @@ pub const Parser = struct {
     fn parse_return_error(this: *Parser) ?*Node {
         const kw = this.lexer.lex();
         std.debug.assert(kw.matches_keyword(.Return) or kw.matches_keyword(.Error));
-        const expr = parse_expression() orelse {
-            this.append(kw.location, "Error parsing {s} expression", .{@tagName(kw.keyword())});
+        const expr = this.parse_expression(0) orelse {
+            this.append(kw.location, "Error parsing {s} expression", .{@tagName(kw.keyword_code())});
             return null;
         };
         if (kw.matches_keyword(.Return)) {
-            return this.tree.add(.Return, kw.location.merge(expr.location), .{expr.index});
+            return this.tree.add(.Return, kw.location.merge(expr.location), flowcontrol.Return{ .expression = expr.index });
         }
-        return this.tree.add(.Error, kw.location.merge(expr.location), .{expr.index});
+        return this.tree.add(.Error, kw.location.merge(expr.location), flowcontrol.Error{ .expression = expr.index });
     }
 
     fn parse_struct(this: *Parser) ?*Node {
@@ -967,11 +1077,11 @@ pub const Parser = struct {
         std.debug.assert(struct_token.matches_keyword(.Struct));
 
         const name = this.lexer.expect_identifier() catch {
-            this.append(this.lexer.location, "Expected struct name");
+            this.append(this.lexer.location, "Expected struct name", .{});
             return null;
         };
         this.lexer.expect_symbol('{') catch {
-            this.append(this.lexer.location, "Expected `{` after struct name", .{});
+            this.append(this.lexer.location, "Expected `{{` after struct name", .{});
             return null;
         };
         var fields = typespec.StructFields.init(this.allocator);
@@ -984,31 +1094,33 @@ pub const Parser = struct {
                 this.append(this.lexer.location, "Expected `:`", .{});
                 return null;
             };
-            const field_type = parse_type() orelse {
-                append(this.lexer.location, "Expected struct member type");
+            const field_type = this.parse_type() orelse {
+                this.append(this.lexer.location, "Expected struct member type", .{});
                 return null;
             };
-            fields.append(this.tree.add(.StructField, label.location.merge(this.lexer.location), .{ text_of(label), field_type.index }).index);
-            if (!this.lexer.accept_symbol(',') and !this.lexer.next_matches('}')) {
-                append(this.lexer.location, "Expected `,` or `}`");
+            fields.append(this.tree.add(
+                .StructField,
+                label.location.merge(this.lexer.location),
+                typespec.StructField{ .label = this.text_of(label), .field_type = field_type.index },
+            ).index) catch fatal.oom();
+            if (!this.lexer.accept_symbol(',') and !this.lexer.matches_symbol('}')) {
+                this.append(this.lexer.location, "Expected `,` or `}}`", .{});
                 return null;
             }
         }
-        return this.tree.add(.Struct, struct_token.location.merge(this.lexer.location), .{ this.text_of(name), fields });
+        return this.tree.add(
+            .Struct,
+            struct_token.location.merge(this.lexer.location),
+            typespec.Struct{ .name = this.text_of(name), .fields = fields },
+        );
     }
 
     fn parse_var(this: *Parser) ?*Node {
         const t = this.lexer.peek();
         std.debug.assert(t.matches_keyword(.Var));
-        this.lexer.lex();
+        _ = this.lexer.lex();
         const decl = this.parse_var_decl() orelse return null;
-        const name: []const u8 = blk: {
-            switch (decl.node) {
-                .VariableDeclaration => |v| break :blk v.name,
-                else => unreachable,
-            }
-        };
-        return this.tree.add(.Var, t.location.merge(decl.location), .{ name, decl.index });
+        return this.tree.add(.Var, t.location.merge(decl.location), variable.Var{ .declaration = decl.index });
     }
 
     fn parse_var_decl(this: *Parser) ?*Node {
@@ -1025,23 +1137,27 @@ pub const Parser = struct {
         } else null;
         const initializer: ?pSyntaxNode = if (this.lexer.accept_symbol('=')) blk: {
             const expr = this.parse_expression(0) orelse {
-                this.append(this.lexer.location, "Error parsing initialization expression");
+                this.append(this.lexer.location, "Error parsing initialization expression", .{});
                 return null;
             };
             break :blk expr.index;
         } else if (type_spec == null) {
-            this.append(this.lexer.location, "Expected variable initialization expression");
+            this.append(this.lexer.location, "Expected variable initialization expression", .{});
             return null;
         } else null;
-        return this.tree.add(.VariableDeclaration, name.location.merge(this.lexer.location), .{ this.text_of(name), type_spec, initializer });
+        return this.tree.add(
+            .VariableDeclaration,
+            name.location.merge(this.lexer.location),
+            variable.VariableDeclaration{ .name = this.text_of(name), .type_spec = type_spec, .initializer = initializer },
+        );
     }
 
     fn parse_while(this: *Parser) ?*Node {
         var label: ?[]const u8 = null;
-        var location: this.lexer.TokenLocation = undefined;
+        var location: TokenLocation = undefined;
         if (this.lexer.cursor > 1 and
             this.lexer.tokens.items[this.lexer.cursor - 1].matches_symbol(':') and
-            this.lexer.tokens.items[this.lexer.cursor - 2].matches(.TokenKind))
+            this.lexer.tokens.items[this.lexer.cursor - 2].matches(.Identifier))
         {
             const lbl = this.lexer.tokens.items[this.lexer.cursor - 2];
             label = this.text_of(lbl);
@@ -1052,7 +1168,7 @@ pub const Parser = struct {
         if (label == null) {
             location = while_token.location;
         }
-        const condition = parse_expression() orelse {
+        const condition = this.parse_expression(0) orelse {
             this.append(while_token.location, "Error parsing `while` condition", .{});
             return null;
         };
@@ -1060,7 +1176,11 @@ pub const Parser = struct {
             this.append(while_token.location, "Error parsing `while` block", .{});
             return null;
         };
-        return this.tree.add(.WhileStatement, location.merge(stmt.location), .{ label, condition.index, stmt.index });
+        return this.tree.add(
+            .WhileStatement,
+            location.merge(stmt.location),
+            flowcontrol.WhileStatement{ .label = label, .condition = condition.index, .statement = stmt.index },
+        );
     }
 
     fn parse_yield(this: *Parser) ?*Node {
@@ -1068,21 +1188,24 @@ pub const Parser = struct {
         std.debug.assert(kw.matches_keyword(.Yield));
         const label: ?[]const u8 = if (this.lexer.accept_symbol(':')) blk: {
             const lbl = this.lexer.expect_identifier() catch {
-                this.append(this.lexer.location, "Expected label name after `:`");
+                this.append(this.lexer.location, "Expected label name after `:`", .{});
                 return null;
             };
-            break :blk text_of(lbl);
+            break :blk this.text_of(lbl);
         } else null;
-        const stmt = parse_statement() orelse {
-            this.append(this.lexer.location, "Could not parse yield expression");
+        const stmt = this.parse_statement() orelse {
+            this.append(this.lexer.location, "Could not parse yield expression", .{});
             return null;
         };
-        return this.tree.add(.Yield, kw.location.merge(this.lexer.location), .{ label, stmt });
+        return this.tree.add(
+            .Yield,
+            kw.location.merge(this.lexer.location),
+            flowcontrol.Yield{ .label = label, .expression = stmt.index },
+        );
     }
 };
 
 test "Parser" {
-    try std.testing.expect(false);
     var parser = Parser.init(std.heap.c_allocator,
         \\ func foo(x: i32) i32
         \\ {
@@ -1091,4 +1214,9 @@ test "Parser" {
         \\
     );
     _ = parser.parse();
+    std.debug.print("\n\n", .{});
+    for (parser.tree.nodes.items) |n| {
+        n.print(std.io.getStdErr().writer());
+    }
+    try std.testing.expect(false);
 }

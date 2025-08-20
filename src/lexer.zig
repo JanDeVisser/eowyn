@@ -12,7 +12,7 @@ pub const TokenLocation = struct {
         return .{};
     }
 
-    pub fn merge(self: *TokenLocation, other: TokenLocation) TokenLocation {
+    pub fn merge(self: *const TokenLocation, other: TokenLocation) TokenLocation {
         var ret = TokenLocation.init();
         ret.index = @min(self.index, other.index);
         ret.length = @max(self.index + self.length, other.index + other.length) - ret.index;
@@ -113,8 +113,9 @@ pub fn match_enum(comptime Keywords: type, s: []const u8, strings: ?std.AutoHash
     return null;
 }
 
-pub fn LexerTypes(comptime Keywords: type) type {
+pub fn LexerTypes(comptime KWs: type) type {
     return struct {
+        pub const Keywords = KWs;
         pub const Token = struct {
             pub const TokenValue = union(TokenKind) {
                 Unknown: void,
@@ -135,10 +136,10 @@ pub fn LexerTypes(comptime Keywords: type) type {
             location: TokenLocation,
             value: TokenValue,
 
-            pub fn number(number_type: NumberType) Token {
+            pub fn number(nt: NumberType) Token {
                 return .{
                     .location = TokenLocation.init(),
-                    .value = TokenValue{ .Number = number_type },
+                    .value = TokenValue{ .Number = nt },
                 };
             }
 
@@ -212,50 +213,73 @@ pub fn LexerTypes(comptime Keywords: type) type {
                 };
             }
 
-            pub fn string(quote_type: QuoteType) Token {
+            pub fn string(qt: QuoteType) Token {
                 return .{
                     .location = TokenLocation.init(),
-                    .value = TokenValue{ .QuotedString = .{ .quote_type = quote_type, .terminated = true, .triple = false } },
+                    .value = TokenValue{ .QuotedString = .{ .quote_type = qt, .terminated = true, .triple = false } },
                 };
             }
 
-            pub fn unterminated_string(quote_type: QuoteType) Token {
+            pub fn unterminated_string(qt: QuoteType) Token {
                 return .{
                     .location = TokenLocation.init(),
-                    .value = TokenValue{ .QuotedString = .{ .quote_type = quote_type, .terminated = false, .triple = false } },
+                    .value = TokenValue{ .QuotedString = .{ .quote_type = qt, .terminated = false, .triple = false } },
                 };
+            }
+
+            pub fn number_type(this: *const Token) NumberType {
+                switch (this.value) {
+                    .Number => |nt| return nt,
+                    else => unreachable,
+                }
+            }
+
+            pub fn quote_type(this: *const Token) QuoteType {
+                switch (this.value) {
+                    .QuotedString => |qs| return qs.quote_type,
+                    else => unreachable,
+                }
+            }
+
+            pub fn symbol_code(this: *const Token) u32 {
+                switch (this.value) {
+                    .Symbol => |sym| return sym,
+                    else => unreachable,
+                }
+            }
+
+            pub fn keyword_code(this: *const Token) Keywords {
+                switch (this.value) {
+                    .Keyword => |kw| return kw,
+                    else => unreachable,
+                }
+            }
+
+            pub fn raw_text(this: *const Token) RawText {
+                switch (this.value) {
+                    .Raw => |r| return r,
+                    else => unreachable,
+                }
             }
 
             pub fn matches(this: *const Token, comptime k: TokenKind) bool {
                 return switch (this.value) {
-                    k => {
-                        return true;
-                    },
-                    else => {
-                        return false;
-                    },
+                    k => return true,
+                    else => return false,
                 };
             }
 
             pub fn matches_symbol(this: *const Token, symb: u32) bool {
                 return switch (this.value) {
-                    .Symbol => |sym| {
-                        return sym == symb;
-                    },
-                    else => {
-                        return false;
-                    },
+                    .Symbol => |sym| return sym == symb,
+                    else => return false,
                 };
             }
 
             pub fn matches_keyword(this: *const Token, kw: Keywords) bool {
                 return switch (this.value) {
-                    .Keyword => |keyw| {
-                        return keyw == kw;
-                    },
-                    else => {
-                        return false;
-                    },
+                    .Keyword => |keyw| return keyw == kw,
+                    else => return false,
                 };
             }
 
@@ -870,7 +894,7 @@ pub fn Lexer(comptime Types: type, Scanner: type) type {
             return this.lex();
         }
 
-        pub fn matches(this: *Self, kind: TokenKind) bool {
+        pub fn matches(this: *Self, comptime kind: TokenKind) bool {
             return this.current.matches(kind);
         }
 
@@ -970,19 +994,19 @@ test "Raw Scanner" {
                 if (t.value.Raw.end) |end| {
                     try expect(end ==
                         \\@begin
-                            \\   There is stuff here
-                            \\
+                        \\   There is stuff here
+                        \\
 
-                            .len);
+                        .len);
                 } else {
                     try expect(false);
                 }
                 try expect(r.matched ==
                     \\@begin
-                        \\   There is stuff here
-                        \\@end
+                    \\   There is stuff here
+                    \\@end
 
-                        .len);
+                    .len);
             },
             else => try expect(false),
         }

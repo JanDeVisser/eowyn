@@ -1,5 +1,7 @@
 const std = @import("std");
 
+pub fn ignore() void {}
+
 pub fn oom() noreturn {
     fatal("Out of memory", .{});
 }

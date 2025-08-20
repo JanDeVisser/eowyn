@@ -37,6 +37,13 @@ pub const LoopStatement = struct {
 pub const Return = struct {
     expression: node.pSyntaxNode,
 };
+
+pub const WhileStatement = struct {
+    label: ?[]const u8,
+    condition: node.pSyntaxNode,
+    statement: node.pSyntaxNode,
+};
+
 pub const Yield = struct {
     label: ?[]const u8 = null,
     expression: node.pSyntaxNode,

@@ -33,25 +33,15 @@ pub const TypeDescription = union(enum) {
         name: []const u8,
         arguments: std.ArrayList(pTypeSpecification),
     },
-    Reference: struct {
-        referencing: pTypeSpecification,
-    },
-    Slice: struct {
-        slice_of: pTypeSpecification,
-    },
-    ZeroTerminatedArray: struct {
-        array_of: pTypeSpecification,
-    },
+    Reference: pTypeSpecification,
+    Slice: pTypeSpecification,
+    ZeroTerminatedArray: pTypeSpecification,
     Array: struct {
         array_of: pTypeSpecification,
         size: usize,
     },
-    DynArray: struct {
-        array_of: pTypeSpecification,
-    },
-    Optional: struct {
-        optional_of: pTypeSpecification,
-    },
+    DynArray: pTypeSpecification,
+    Optional: pTypeSpecification,
     Error: struct {
         success_type: pTypeSpecification,
         error_type: pTypeSpecification,

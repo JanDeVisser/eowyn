@@ -2,7 +2,7 @@ const std = @import("std");
 const lexer = @import("lexer.zig");
 const fatal = @import("fatal.zig");
 
-pub const Precedence = u16;
+pub const Precedence = i32;
 
 pub const EowynKeyword = enum {
     AssignAnd,
@@ -66,15 +66,41 @@ pub const EowynKeyword = enum {
             strings.?.put(.AssignShiftLeft, "<<=") catch fatal.oom();
             strings.?.put(.AssignShiftRight, ">>=") catch fatal.oom();
             strings.?.put(.AssignXor, "^=") catch fatal.oom();
+            strings.?.put(.Break, "break") catch fatal.oom();
+            strings.?.put(.Cast, "cast") catch fatal.oom();
+            strings.?.put(.Const, "const") catch fatal.oom();
+            strings.?.put(.Continue, "continue") catch fatal.oom();
+            strings.?.put(.Defer, "defer") catch fatal.oom();
+            strings.?.put(.Else, "else") catch fatal.oom();
+            strings.?.put(.Embed, "@embed") catch fatal.oom();
+            strings.?.put(.Enum, "enum") catch fatal.oom();
             strings.?.put(.Equals, "==") catch fatal.oom();
+            strings.?.put(.Error, "error") catch fatal.oom();
             strings.?.put(.ExternLink, "->") catch fatal.oom();
+            strings.?.put(.False, "false") catch fatal.oom();
+            strings.?.put(.For, "for") catch fatal.oom();
+            strings.?.put(.Func, "func") catch fatal.oom();
             strings.?.put(.GreaterEqual, ">=") catch fatal.oom();
+            strings.?.put(.If, "if") catch fatal.oom();
+            strings.?.put(.Import, "import") catch fatal.oom();
+            strings.?.put(.Include, "include") catch fatal.oom();
             strings.?.put(.LessEqual, "<=") catch fatal.oom();
             strings.?.put(.LogicalAnd, "&&") catch fatal.oom();
             strings.?.put(.LogicalOr, "||") catch fatal.oom();
+            strings.?.put(.Loop, "loop") catch fatal.oom();
             strings.?.put(.NotEqual, "!=") catch fatal.oom();
+            strings.?.put(.Null, "null") catch fatal.oom();
+            strings.?.put(.Public, "public") catch fatal.oom();
+            strings.?.put(.Range, "..") catch fatal.oom();
+            strings.?.put(.Return, "return") catch fatal.oom();
             strings.?.put(.ShiftLeft, "<<") catch fatal.oom();
             strings.?.put(.ShiftRight, ">>") catch fatal.oom();
+            strings.?.put(.Sizeof, "sizeof") catch fatal.oom();
+            strings.?.put(.Struct, "struct") catch fatal.oom();
+            strings.?.put(.True, "true") catch fatal.oom();
+            strings.?.put(.Var, "var") catch fatal.oom();
+            strings.?.put(.While, "while") catch fatal.oom();
+            strings.?.put(.Yield, "yield") catch fatal.oom();
         }
         return lexer.match_enum(Self, s, strings);
     }
@@ -205,56 +231,55 @@ pub const BindingPower = struct {
 };
 
 pub const operators = [_]OperatorDef{
-    .{ .Add, '+', 11 },
-    .{ .AddressOf, '&', 14, .Prefix, .Right },
-    .{ .Assign, '=', 1, .Infix, .Right },
-    .{ .AssignAnd, .AssignAnd, 1, .Infix, .Right },
-    .{ .AssignDecrement, .AssignDecrement, 1, .Infix, .Right },
-    .{ .AssignDivide, .AssignDivide, 1, .Infix, .Right },
-    .{ .AssignIncrement, .AssignIncrement, 1, .Infix, .Right },
-    .{ .AssignModulo, .AssignModulo, 1, .Infix, .Right },
-    .{ .AssignMultiply, .AssignMultiply, 1, .Infix, .Right },
-    .{ .AssignOr, .AssignOr, 1, .Infix, .Right },
-    .{ .AssignShiftLeft, .AssignShiftLeft, 1, .Infix, .Right },
-    .{ .AssignShiftRight, .AssignShiftRight, 1, .Infix, .Right },
-    .{ .AssignXor, .AssignXor, 1, .Infix, .Right },
-    .{ .BinaryInvert, '~', 14, .Prefix, .Right },
-    .{ .Call, '(', 15 },
-    .{ .Call, ')', 15, .Closing },
-    .{ .Cast, .Cast, 14 },
-    .{ .Divide, '/', 12 },
-    .{ .Equals, .Equals, 8 },
-    .{ .Greater, '>', 8 },
-    .{ .GreaterEqual, .GreaterEqual, 8 },
-    .{ .Idempotent, '+', 14, .Prefix, .Right },
-    .{ .Length, '#', 9, .Prefix, .Right },
-    .{ .Less, '<', 8 },
-    .{ .LessEqual, .LessEqual, 8 },
-    .{ .LogicalInvert, '!', 14, .Prefix, .Right },
-    .{ .MemberAccess, '.', 15 },
-    .{ .Modulo, '%', 12 },
-    .{ .Multiply, '*', 12 },
-    .{ .Negate, '-', 14, .Prefix, .Right },
-    .{ .NotEqual, .NotEqual, 8 },
-    .{ .Range, .Range, 2 },
-    .{ .Sequence, ',', 1 },
-    .{ .ShiftLeft, .ShiftLeft, 10 },
-    .{ .ShiftRight, .ShiftRight, 10 },
-    .{ .Sizeof, .Sizeof, 9, .Prefix, .Right },
-    .{ .Subscript, '[', 15, .Postfix },
-    .{ .Subscript, ']', 15, .Closing },
-    .{ .Subtract, '-', 11 },
+    .{ .op = .Add, .sym = .{ .Char = '+' }, .precedence = 11 },
+    .{ .op = .Assign, .sym = .{ .Char = '=' }, .precedence = 1, .position = .Infix, .associativity = .Right },
+    .{ .op = .AssignAnd, .sym = .{ .Keyword = .AssignAnd }, .precedence = 1, .position = .Infix, .associativity = .Right },
+    .{ .op = .AssignDecrement, .sym = .{ .Keyword = .AssignDecrement }, .precedence = 1, .position = .Infix, .associativity = .Right },
+    .{ .op = .AssignDivide, .sym = .{ .Keyword = .AssignDivide }, .precedence = 1, .position = .Infix, .associativity = .Right },
+    .{ .op = .AddressOf, .sym = .{ .Char = '&' }, .precedence = 14, .position = .Prefix, .associativity = .Right },
+    .{ .op = .AssignIncrement, .sym = .{ .Keyword = .AssignIncrement }, .precedence = 1, .position = .Infix, .associativity = .Right },
+    .{ .op = .AssignModulo, .sym = .{ .Keyword = .AssignModulo }, .precedence = 1, .position = .Infix, .associativity = .Right },
+    .{ .op = .AssignMultiply, .sym = .{ .Keyword = .AssignMultiply }, .precedence = 1, .position = .Infix, .associativity = .Right },
+    .{ .op = .AssignOr, .sym = .{ .Keyword = .AssignOr }, .precedence = 1, .position = .Infix, .associativity = .Right },
+    .{ .op = .AssignShiftLeft, .sym = .{ .Keyword = .AssignShiftLeft }, .precedence = 1, .position = .Infix, .associativity = .Right },
+    .{ .op = .AssignShiftRight, .sym = .{ .Keyword = .AssignShiftRight }, .precedence = 1, .position = .Infix, .associativity = .Right },
+    .{ .op = .AssignXor, .sym = .{ .Keyword = .AssignXor }, .precedence = 1, .position = .Infix, .associativity = .Right },
+    .{ .op = .BinaryInvert, .sym = .{ .Char = '~' }, .precedence = 14, .position = .Prefix, .associativity = .Right },
+    .{ .op = .Call, .sym = .{ .Char = '(' }, .precedence = 15 },
+    .{ .op = .Call, .sym = .{ .Char = ')' }, .precedence = 15, .position = .Closing },
+    .{ .op = .Cast, .sym = .{ .Keyword = .Cast }, .precedence = 14 },
+    .{ .op = .Divide, .sym = .{ .Char = '/' }, .precedence = 12 },
+    .{ .op = .Equals, .sym = .{ .Keyword = .Equals }, .precedence = 8 },
+    .{ .op = .Greater, .sym = .{ .Char = '>' }, .precedence = 8 },
+    .{ .op = .GreaterEqual, .sym = .{ .Keyword = .GreaterEqual }, .precedence = 8 },
+    .{ .op = .Idempotent, .sym = .{ .Char = '+' }, .precedence = 14, .position = .Prefix, .associativity = .Right },
+    .{ .op = .Length, .sym = .{ .Char = '#' }, .precedence = 9, .position = .Prefix, .associativity = .Right },
+    .{ .op = .Less, .sym = .{ .Char = '<' }, .precedence = 8 },
+    .{ .op = .LessEqual, .sym = .{ .Keyword = .LessEqual }, .precedence = 8 },
+    .{ .op = .LogicalInvert, .sym = .{ .Char = '!' }, .precedence = 14, .position = .Prefix, .associativity = .Right },
+    .{ .op = .MemberAccess, .sym = .{ .Char = '.' }, .precedence = 15 },
+    .{ .op = .Modulo, .sym = .{ .Char = '%' }, .precedence = 12 },
+    .{ .op = .Multiply, .sym = .{ .Char = '*' }, .precedence = 12 },
+    .{ .op = .Negate, .sym = .{ .Char = '-' }, .precedence = 14, .position = .Prefix, .associativity = .Right },
+    .{ .op = .NotEqual, .sym = .{ .Keyword = .NotEqual }, .precedence = 8 },
+    .{ .op = .Range, .sym = .{ .Keyword = .Range }, .precedence = 2 },
+    .{ .op = .Sequence, .sym = .{ .Char = ',' }, .precedence = 1 },
+    .{ .op = .ShiftLeft, .sym = .{ .Keyword = .ShiftLeft }, .precedence = 10 },
+    .{ .op = .ShiftRight, .sym = .{ .Keyword = .ShiftRight }, .precedence = 10 },
+    .{ .op = .Sizeof, .sym = .{ .Keyword = .Sizeof }, .precedence = 9, .position = .Prefix, .associativity = .Right },
+    .{ .op = .Subscript, .sym = .{ .Char = '[' }, .precedence = 15, .position = .Postfix },
+    .{ .op = .Subscript, .sym = .{ .Char = ']' }, .precedence = 15, .position = .Closing },
+    .{ .op = .Subtract, .sym = .{ .Char = '-' }, .precedence = 11 },
 };
 
 pub fn binding_power(op: OperatorDef) BindingPower {
     switch (op.position) {
         .Infix => switch (op.associativity) {
-            .Left => return .{ op.precedence * 2 - 1, op.precedence * 2 },
-            .Right => return .{ op.precedence * 2, op.precedence * 2 - 1 },
+            .Left => return .{ .left = op.precedence * 2 - 1, .right = op.precedence * 2 },
+            .Right => return .{ .left = op.precedence * 2, .right = op.precedence * 2 - 1 },
         },
-        .Prefix => return .{ -1, op.precedence * 2 - 1 },
-        .Postfix => return .{ op.precedence * 2 - 1, -1 },
-        .Closing => return .{ -1, -1 },
-        else => unreachable,
+        .Prefix => return .{ .left = -1, .right = op.precedence * 2 - 1 },
+        .Postfix => return .{ .left = op.precedence * 2 - 1, .right = -1 },
+        .Closing => return .{ .left = -1, .right = -1 },
     }
 }
